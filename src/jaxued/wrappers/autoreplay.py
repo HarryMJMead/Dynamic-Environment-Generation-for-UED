@@ -53,5 +53,9 @@ class AutoReplayWrapper(UnderspecifiedEnv):
         obs, env_state = self._env.update_state_from_level(level, state.env_state)
         return obs, AutoReplayState(env_state=env_state, level=level)
     
+    def update_state_from_adv_state(self, adv_state, state: AutoReplayState, index: int) -> Tuple[Observation, AutoReplayState]:
+        obs, env_state = self._env.update_state_from_adv_state(adv_state, state.env_state, index)
+        return obs, AutoReplayState(env_state=env_state, level=adv_state.level)
+    
     def action_space(self, params: EnvParams) -> Any:
         return self._env.action_space(params)

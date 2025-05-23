@@ -17,7 +17,9 @@ RUN apt-get update && \
     apt-get install -y tmux
 
 #jaxmarl from source if needed, all the requirements
-RUN pip install -e . && \
+RUN pip install moviepy==1.0.3 && \
+    pip install wandb==0.18.5 && \
+    pip install -e . && \
     # pip install --upgrade pip && \
     # pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
     # pip install matplotlib && \

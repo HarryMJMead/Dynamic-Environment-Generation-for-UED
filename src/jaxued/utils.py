@@ -56,6 +56,27 @@ def positive_value_loss(dones, advantages, incomplete_value=-jnp.inf):
     mean_scores, _, episode_count = accumulate_rollout_stats(dones, jnp.maximum(advantages, 0), time_average=True)
     return jnp.where(episode_count > 0, mean_scores, incomplete_value)
 
+def negative_value_loss(dones, advantages, incomplete_value=-jnp.inf):
+    mean_scores, _, episode_count = accumulate_rollout_stats(dones, -jnp.minimum(advantages, 0), time_average=True)
+    return jnp.where(episode_count > 0, mean_scores, incomplete_value)
+
+def negative_value_loss_solved(dones, advantages, solved, incomplete_value=-jnp.inf):
+    mean_scores, _, episode_count = accumulate_rollout_stats(dones, -jnp.minimum(advantages, 0), time_average=False)
+    mean_scores = mean_scores * solved
+    return jnp.where(episode_count > 0, mean_scores, incomplete_value)
+
+def negative_value_loss_solved_sum(advantages, solved):
+    sum_scores = -jnp.minimum(advantages, 0).sum(axis=0) * solved
+    return sum_scores
+
+def l1_value_loss(dones, advantages, incomplete_value=-jnp.inf):
+    mean_scores, _, episode_count = accumulate_rollout_stats(dones, jnp.abs(advantages), time_average=True)
+    return jnp.where(episode_count > 0, mean_scores, incomplete_value)
+
+def value_disagreement(dones, values, incomplete_value=-jnp.inf):
+    mean_scores, _, episode_count = accumulate_rollout_stats(dones, values.std(-1), time_average=True)
+    return jnp.where(episode_count > 0, mean_scores, incomplete_value)
+
 def accumulate_rollout_stats_w_idxs(dones, metrics, *, time_average, idxs):
     def iter(carry, input):
         sum_val, max_val, accum_val, step_count, episode_count, max_idx = carry

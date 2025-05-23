@@ -12,7 +12,7 @@ class Actions(IntEnum):
     left = 0    # Turn left
     right = 1   # Turn right
     forward = 2 # Move forward
-    # pickup = 3  # Pick up an object
+    use = 3  # Pick up an object
     # drop = 4    # Drop an object
     # toggle = 5  # Toggle/activate an object
     # done = 6    # Done completing task
@@ -67,6 +67,11 @@ class EnvState:
     time: int
     terminal: bool
     goal_placed: chex.Array
+    has_key: chex.Array = jnp.array(False, dtype=jnp.bool_)
+    key_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
+    key_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
+    door_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
+    door_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
 
 @struct.dataclass
 class Observation:
@@ -75,6 +80,7 @@ class Observation:
     obs_location: chex.Array = None
     agent_observation: chex.Array = None
     agent_location: chex.Array = None
+    has_key: chex.Array = None
 
 
 @struct.dataclass
@@ -102,6 +108,7 @@ class Maze(UnderspecifiedEnv):
         normalize_obs = False,
         fully_obs = False,
         penalize_time = True,
+        key_reward = 0.0,
     ):
         super().__init__()
         self.max_height = max_height
@@ -111,6 +118,7 @@ class Maze(UnderspecifiedEnv):
         self.normalize_obs = normalize_obs
         self.fully_obs = fully_obs
         self.penalize_time = penalize_time
+        self.key_reward = key_reward
 
     @property
     def default_params(self) -> EnvParams:
@@ -125,8 +133,9 @@ class Maze(UnderspecifiedEnv):
     ) -> Tuple[Observation, EnvState, float, bool, dict]:
         """Perform single timestep state transition."""
         state, reward = self._step_agent(rng, state, action, params)
+        maze_map = make_maze_map(state, self.agent_view_size-1)
         # Check game condition & no. steps for termination condition
-        state = state.replace(time=state.time + 1)
+        state = state.replace(time=state.time + 1, maze_map=maze_map)
         done = self.is_terminal(state, params)
         state = state.replace(terminal=done)
         return (
@@ -163,6 +172,10 @@ class Maze(UnderspecifiedEnv):
             maze_map=maze_map,
             time=0,
             terminal=False,
+            door_pos=jnp.array(level.door_pos, dtype=jnp.uint32),
+            door_placed=jnp.array(level.door_placed, dtype=jnp.uint8),
+            key_pos=jnp.array(level.key_pos, dtype=jnp.uint32),
+            key_placed=jnp.array(level.key_placed, dtype=jnp.uint8),
         )
     
     def update_state_from_level(self, level: Level, state: EnvState) -> EnvState:
@@ -172,13 +185,32 @@ class Maze(UnderspecifiedEnv):
             maze_map=maze_map,
             goal_pos=jnp.array(level.goal_pos, dtype=jnp.uint32),
             goal_placed=jnp.array(level.goal_placed, dtype=jnp.bool_),
+            
+            door_pos=jnp.array(level.door_pos, dtype=jnp.uint32),
+            door_placed=jnp.array(jnp.maximum(state.door_placed, level.door_placed), dtype=jnp.uint8),
+            key_pos=jnp.array(level.key_pos, dtype=jnp.uint32),
+            key_placed=jnp.array(jnp.maximum(state.key_placed, level.key_placed), dtype=jnp.uint8),
         )
         return self.get_obs(state), state
+
+    def update_state_from_adv_state(self, adv_state, state: EnvState, index: int) -> EnvState:
+        agent_pos = jax.lax.dynamic_index_in_dim(adv_state.agent_locs, index, keepdims=False)
+        agent_dir = jax.lax.dynamic_index_in_dim(adv_state.agent_dirs, index, keepdims=False)
+        state = state.replace(
+            agent_pos=agent_pos,
+            agent_dir=agent_dir
+        )
+        return self.update_state_from_level(adv_state.level, state)
 
     def get_obs(self, state: EnvState) -> Observation:
         if self.fully_obs:
             return self._get_full_obs(state)
         return self._get_partial_obs(state)
+    
+    def get_goal_location(self, state: EnvState) -> chex.Array:
+        y, x = state.goal_pos.astype(jnp.int32)
+        goal_observation = jnp.zeros((state.wall_map.shape[0], state.wall_map.shape[1]))
+        return jax.lax.select(state.goal_placed, jax.lax.dynamic_update_slice(goal_observation, jnp.ones((1, 1))*10, (x, y)), goal_observation)
 
     def is_terminal(self, state: EnvState, params: EnvParams) -> bool:
         """Check whether state is terminal."""
@@ -239,12 +271,12 @@ class Maze(UnderspecifiedEnv):
             image = image/10.0
 
         y, x = state.agent_pos.astype(jnp.int32)
-        agent_observation = obs_location[padding:-padding, padding:-padding].squeeze().astype(jnp.uint8)
-        agent_observation = jax.lax.dynamic_update_slice(agent_observation, jnp.ones((1, 1), dtype=jnp.uint8)*10, (x, y))
+        agent_observation = obs_location[padding:-padding, padding:-padding].squeeze().astype(jnp.float32)
+        agent_observation = jax.lax.dynamic_update_slice(agent_observation, jnp.ones((1, 1))*10, (x, y))
 
         agent_location = jnp.concatenate([state.agent_dir.reshape((1,)), state.agent_pos])
 
-        return Observation(image=image.transpose(1, 0, 2), agent_dir=state.agent_dir, obs_location=obs_location, agent_observation=agent_observation, agent_location=agent_location)
+        return Observation(image=image.transpose(1, 0, 2), agent_dir=state.agent_dir, obs_location=obs_location, agent_observation=agent_observation, agent_location=agent_location, has_key=state.has_key)
         
     def _step_agent(self, rng: chex.PRNGKey, state: EnvState, action: int, params: EnvParams) -> Tuple[EnvState, float]:
         # Update agent position (forward action)
@@ -253,26 +285,47 @@ class Maze(UnderspecifiedEnv):
             jnp.array([self.max_width-1, self.max_height-1], dtype=jnp.uint32)
         )
 
+        # Check for key
+        fwd_pos_has_blocked_door = jnp.logical_and(jnp.logical_and(fwd_pos[0] == state.door_pos[0], fwd_pos[1] == state.door_pos[1]), state.door_placed==1)
+        fwd_pos_has_key = jnp.logical_and(jnp.logical_and(fwd_pos[0] == state.key_pos[0], fwd_pos[1] == state.key_pos[1]), state.key_placed)
+        agent_has_key = jnp.logical_or(state.has_key, fwd_pos_has_key)
+        key_placed = state.key_placed * (1 - agent_has_key) + agent_has_key*2
+
         # Can't go past wall or goal
         fwd_pos_has_wall = state.wall_map[fwd_pos[1], fwd_pos[0]]
         fwd_pos_has_goal = jnp.logical_and(jnp.logical_and(fwd_pos[0] == state.goal_pos[0], fwd_pos[1] == state.goal_pos[1]), state.goal_placed)
-        fwd_pos_blocked = jnp.logical_or(fwd_pos_has_wall, fwd_pos_has_goal)
+        fwd_pos_blocked = jnp.logical_or(jnp.logical_or(fwd_pos_has_wall, fwd_pos_has_goal), fwd_pos_has_blocked_door)
         agent_pos = (fwd_pos_blocked*state.agent_pos + (~fwd_pos_blocked)*fwd_pos).astype(jnp.uint32)
 
         # Update agent direction (left_turn or right_turn action)
         agent_dir_offset = 0 + (action == Actions.right) - (action == Actions.left)
         agent_dir = (state.agent_dir + agent_dir_offset) % 4
 
+        # Check Door Unlock
+        fwd_pos_door = jnp.minimum(
+            jnp.maximum(state.agent_pos + DIR_TO_VEC[state.agent_dir], 0), 
+            jnp.array([self.max_width-1, self.max_height-1], dtype=jnp.uint32)
+        )
+        fwd_pos_has_door = jnp.logical_and(jnp.logical_and(fwd_pos_door[0] == state.door_pos[0], fwd_pos_door[1] == state.door_pos[1]), state.door_placed==1)
+        unlock_door = jnp.logical_and(jnp.logical_and(fwd_pos_has_door, action == Actions.use), agent_has_key)
+        door_placed = state.door_placed * (1 - unlock_door) + 2*unlock_door
+
         if self.penalize_time:
             reward = (1.0 - 0.9*((state.time+1)/params.max_steps_in_episode))*fwd_pos_has_goal
         else:
             reward = jax.lax.select(fwd_pos_has_goal, 1., 0.)
+        
+        if self.key_reward > 0:
+            reward = reward + self.key_reward * jnp.logical_and(key_placed == 2, state.key_placed == 1) + self.key_reward * jnp.logical_and(door_placed == 2, state.door_placed == 1)
 
         return (
             state.replace(
                 agent_pos=agent_pos,
                 agent_dir=agent_dir,  
-                terminal=fwd_pos_has_goal),
+                terminal=fwd_pos_has_goal,
+                has_key=agent_has_key,
+                key_placed=key_placed,
+                door_placed=door_placed),
             reward
         )
         
@@ -301,6 +354,14 @@ def make_maze_map(
     goal_x,goal_y = level.goal_pos
     ignore_goal = jnp.logical_or(~level.goal_placed, ignore_goal)
     maze_map = jax.lax.select(ignore_goal, maze_map, maze_map.at[goal_y,goal_x,:].set(goal))
+
+    door = jnp.array([OBJECT_TO_INDEX['door'], level.door_placed, 0], dtype=jnp.uint8)
+    door_x,door_y = level.door_pos
+    maze_map = jax.lax.select(level.door_placed == 0, maze_map, maze_map.at[door_y,door_x,:].set(door))
+
+    key = jnp.array([OBJECT_TO_INDEX['key'], level.key_placed, 0], dtype=jnp.uint8)
+    key_x,key_y = level.key_pos
+    maze_map = jax.lax.select(level.key_placed == 0, maze_map, maze_map.at[key_y,key_x,:].set(key))
 
     if padding > 0:
         maze_map_padded = jnp.tile(wall.reshape((1, 1, *empty.shape)), (maze_map.shape[0]+2*padding, maze_map.shape[1]+2*padding, 1))

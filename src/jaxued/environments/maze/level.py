@@ -15,6 +15,10 @@ class Level:
     width: int
     height: int
     goal_placed: chex.Array
+    key_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
+    key_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
+    door_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
+    door_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
     
     def is_well_formatted(self):
         wall_map_is_binary = jnp.all((self.wall_map == 0) | (self.wall_map == 1))
@@ -39,6 +43,9 @@ class Level:
         goal_pos = []
         agent_pos = None
         agent_dir = None
+
+        key_pos = [(0, 0)]
+        door_pos = [(0, 0)]
         
         for y, row in enumerate(rows):
             for x, c in enumerate(row):
@@ -46,6 +53,10 @@ class Level:
                     wall_map[y, x] = True
                 elif c == 'G':
                     goal_pos.append((x, y))
+                elif c == 'K':
+                    key_pos.append((x, y))
+                elif c == 'D':
+                    door_pos.append((x, y))
                 elif c == '>':
                     assert agent_pos is None, "Agent position can only be set once."
                     agent_pos, agent_dir = (x, y), 0
@@ -66,7 +77,8 @@ class Level:
         assert len(goal_pos) > 0, "Goal position not set."
         assert agent_pos is not None, "Agent position not set."
         
-        return Level(jnp.array(wall_map), *map(lambda x: jnp.array(x, dtype=jnp.uint32), (goal_pos[0], agent_pos)), jnp.array(agent_dir, dtype=jnp.uint8), ncols, nrows, jnp.array(True, dtype=jnp.bool_))
+        return Level(jnp.array(wall_map), *map(lambda x: jnp.array(x, dtype=jnp.uint32), (goal_pos[0], agent_pos)), jnp.array(agent_dir, dtype=jnp.uint8), ncols, nrows, jnp.array(True, dtype=jnp.bool_), 
+                     door_pos=jnp.array(door_pos[-1], dtype=jnp.uint32), key_pos=jnp.array(key_pos[-1], dtype=jnp.uint32), door_placed=jnp.array(len(door_pos)>1, dtype=jnp.uint8), key_placed=jnp.array(len(key_pos)>1, dtype=jnp.uint8))
     
     def to_str(self):
         w, h = self.width, self.height
@@ -91,6 +103,14 @@ class Level:
         p = self.goal_pos
         x, y = self.goal_pos
         enc[y, x] = 'G'
+
+        x, y = self.key_pos
+        if self.key_placed:
+            enc[y, x] = 'K'
+
+        x, y = self.door_pos
+        if self.door_placed:
+            enc[y, x] = 'Ds'
         
         return '\n'.join([''.join(row) for row in enc]).strip()
     
@@ -270,6 +290,182 @@ StandardMaze3 = """
 .#...#...#...
 """
 
+SixteenRooms_Key = """
+...#..#..#..K
+.>.......#...
+...#..#......
+#.###.##.###.
+...#.........
+......#..#...
+##.#.##.###.#
+...#.....#...
+...#..#......
+.####.##.####
+...#..#..#...
+......#..D.G.
+...#.....#...
+"""
+
+SixteenRooms2_Key = """
+...#.....#...
+.>....#..#...
+...#..#..#...
+####.##.###.#
+...#..#......
+......#..#...
+#.#####.#####
+...#..#..#...
+...#.........
+##.##.##.####
+...#..#..#...
+......#..D.G.
+K..#..#..#...
+"""
+
+Labyrinth_Key = """
+K............
+.###########.
+.#.........#.
+.#.#######.#.
+.#.#.....#.#.
+.#.#.###.#.#.
+.#.#.#G#.#.#.
+.#.#.#.#.#.#.
+.#...#...#.#.
+.#########.#.
+.....#.....#.
+####.#D#####.
+>....#.......
+"""
+
+LabyrinthFlipped_Key = """
+............K
+.###########.
+.#.........#.
+.#.#######.#.
+.#.#.....#.#.
+.#.#.###.#.#.
+.#.#.#G#.#.#.
+.#.#.#.#.#.#.
+.#.#...#...#.
+.#.#########.
+.#.....#.....
+.#####D#.####
+.......#....<
+"""
+
+Labyrinth2_Key = """
+>#..........K
+.#.#########.
+.#.#.......#.
+.#.#.#####.#.
+.#.#.#...#.#.
+...#.#.#.#.#.
+####.#G#.#.#.
+...#.###.#.#.
+.#.#D....#.#.
+.#.#######.#.
+.#.........#.
+.###########.
+.............
+"""
+
+StandardMaze_Key = """
+.....#>...#..
+.###D####.##.
+.#...........
+.########.###
+........#....
+######.#####.
+....#..#.....
+.##...##.####
+..#.#..#...#K
+#.#.##.###.#.
+#.#..#...#...
+#.##.###.###.
+...#..G#.#...
+"""
+
+StandardMaze2_Key = """
+...#.#....#..
+.#.#.####...#
+.#........#..
+.########D###
+...#..#K#.#.G
+##.#.##.#.#..
+>#.#....#.##.
+.#.##.###..#.
+.#..#..###.#.
+.##.##.#.#.#.
+.#...#.#.#.#.
+.#.#.#.#.#.#.
+...#...#.....
+"""
+
+StandardMaze3_Key = """
+...>#.#......
+.####.#.####.
+.#....#.#....
+...####.#.#D#
+##.#....#.#..
+...#.##.#.##.
+.#.#.#..#..#G
+.#.#.#.###.##
+.#...#.#.#...
+.###.#.#.###.
+.#...#.#...#.
+.#.###.#.#.#.
+.#..K#...#...
+"""
+
+FourRooms_Key = """
+......#......
+.>....#....G.
+......#......
+......#......
+......#......
+......#......
+###.#####D###
+......#......
+......#......
+......#......
+.............
+......#......
+K.....#......
+"""
+
+FourRooms2_Key = """
+......#......
+.>....#....G.
+......D......
+......#......
+......#......
+......#......
+###.#########
+......#.....K
+......#......
+......#......
+.............
+......#......
+......#......
+"""
+
+FourRooms3_Key = """
+......#..>...
+......#......
+......#......
+.............
+......#......
+......#......
+###D#####.###
+......#......
+......#......
+......#......
+......#......
+.G....#......
+......#.....K
+"""
+
 prefabs = {
     "TrivialMaze": TrivialMaze.strip(),
     "TrivialMaze2": TrivialMaze2.strip(),
@@ -282,8 +478,20 @@ prefabs = {
     "StandardMaze": StandardMaze.strip(),
     "StandardMaze2": StandardMaze2.strip(),
     "StandardMaze3": StandardMaze3.strip(),
+
+    "SixteenRooms_Key": SixteenRooms_Key.strip(),
+    "SixteenRooms2_Key": SixteenRooms2_Key.strip(),
+    "Labyrinth_Key": Labyrinth_Key.strip(),
+    "LabyrinthFlipped_Key": LabyrinthFlipped_Key.strip(),
+    "Labyrinth2_Key": Labyrinth2_Key.strip(),
+    "StandardMaze_Key": StandardMaze_Key.strip(),
+    "StandardMaze2_Key": StandardMaze2_Key.strip(),
+    "StandardMaze3_Key": StandardMaze3_Key.strip(),
+    "FourRooms_Key": FourRooms_Key.strip(),
+    "FourRooms2_Key": FourRooms2_Key.strip(),
+    "FourRooms3_Key": FourRooms3_Key.strip(),
 }
 
 @struct.dataclass
 class ObservedLevel(Level):
-    observation_map: chex.Array
+    observation_map: chex.Array = None

@@ -44,6 +44,47 @@ def make_level_generator(height: int, width: int, n_walls: int) -> Callable[[che
     
     return sample
 
+def make_level_w_key_generator(height: int, width: int, n_walls: int):
+    def sample(rng: chex.PRNGKey) -> Level:
+        max_w, max_h = width, height
+        all_pos = jnp.arange(max_w * max_h, dtype=jnp.uint32)
+        valid_mask = (all_pos % max_w < width) & (all_pos < max_w * height)
+        
+        rng_wall, rng_agent_pos, rng_agent_dir, rng_goal, rng_door, rng_key = jax.random.split(rng, 6)
+        # n_walls = jax.random.choice(rng_n_walls, n_walls+1)
+        
+        choices = jax.random.choice(rng_wall, max_w*max_h, shape=(max_w*max_h,), p=valid_mask, replace=True)
+        choices = jnp.where(all_pos < n_walls, choices, choices[0])
+        occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[choices].set(n_walls > 0) | ~valid_mask
+        wall_map = occupied_mask.reshape(max_h, max_w)
+
+        # Reset agent position + dir
+        agent_idx = jax.random.choice(rng_agent_pos, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[agent_idx].set(True)
+        agent_pos = jnp.array([agent_idx%max_w, agent_idx//max_w], dtype=jnp.uint32).flatten()
+
+        # Reset agent direction
+        agent_dir = jax.random.choice(rng_agent_dir, jnp.arange(len(DIR_TO_VEC), dtype=jnp.uint8))
+
+        # Reset goal position
+        goal_idx = jax.random.choice(rng_goal, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[goal_idx].set(True)
+        goal_pos = jnp.array([goal_idx%max_w, goal_idx//max_w], dtype=jnp.uint32).flatten()
+
+        # Reset goal position
+        door_idx = jax.random.choice(rng_door, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[door_idx].set(True)
+        door_pos = jnp.array([door_idx%max_w, door_idx//max_w], dtype=jnp.uint32).flatten()
+
+        # Reset goal position
+        key_idx = jax.random.choice(rng_key, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[key_idx].set(True)
+        key_pos = jnp.array([key_idx%max_w, key_idx//max_w], dtype=jnp.uint32).flatten()
+        
+        return Level(wall_map, goal_pos, agent_pos, agent_dir, width, height, True, key_pos, 1, door_pos, 1)
+    
+    return sample
+
 def make_level_mutator(max_num_edits: int) -> Callable[[chex.PRNGKey, Level, int], Level]:
     def mutate(rng: chex.PRNGKey, level: Level, num_edits: int = 1) -> Level:
         max_w, max_h = level.wall_map.shape[1], level.wall_map.shape[0]
@@ -168,6 +209,138 @@ def make_level_mutator_minimax(max_num_edits: int) -> Callable[[chex.PRNGKey, Le
         next_goal_pos = jnp.array([next_goal_x,next_goal_y], dtype=jnp.uint32)
 
         return state.replace(wall_map=next_wall_map, goal_pos=next_goal_pos)
+
+    def move_goal_flip_walls(rng, level, n=1):
+        def _mutate(carry, step):
+            state = carry
+            rng, mutation = step
+
+            def _apply(rng, state):    
+                rng, arng, brng = jax.random.split(rng, 3)
+
+                is_flip_wall = jnp.equal(mutation, Mutations.FLIP_WALL.value)
+                mutated_state = flip_wall(arng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_flip_wall, x, y), mutated_state, state)
+
+                is_move_goal = jnp.equal(mutation, Mutations.MOVE_GOAL.value)
+                mutated_state = move_goal(brng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_goal, x, y), mutated_state, next_state)
+                
+                return next_state
+                
+            return jax.lax.cond(mutation != -1, _apply, lambda *_: state, rng, state), None
+
+        rng, nrng, *mrngs = jax.random.split(rng, max_num_edits+2)
+        mutations = jax.random.choice(nrng, np.arange(len(Mutations)), (max_num_edits,))
+        mutations = jnp.where(jnp.arange(max_num_edits) < n, mutations, -1) # mask out extra mutations
+
+        new_level, _ = jax.lax.scan(_mutate, level, (jnp.array(mrngs), mutations))
+
+        return new_level
+    
+    return move_goal_flip_walls
+
+def make_level_mutator_minimax_key(max_num_edits: int) -> Callable[[chex.PRNGKey, Level, int], Level]:
+    class Mutations(IntEnum):
+        # Turn left, turn right, move forward
+        NO_OP = 0
+        FLIP_WALL = 1
+        MOVE_GOAL = 2
+        MOVE_KEY = 3
+        MOVE_DOOR = 4
+    
+    def flip_wall(rng, state):
+        wall_map = state.wall_map
+        h,w = wall_map.shape
+        wall_mask = jnp.ones((h*w,), dtype=jnp.bool_)
+
+        goal_idx = w*state.goal_pos[1] + state.goal_pos[0]
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        door_idx = w*state.door_pos[1] + state.door_pos[0]
+        key_idx = w*state.key_pos[1] + state.key_pos[0]
+        wall_mask = wall_mask.at[goal_idx].set(False)
+        wall_mask = wall_mask.at[agent_idx].set(False)
+        wall_mask = wall_mask.at[door_idx].set(False)
+        wall_mask = wall_mask.at[key_idx].set(False)
+
+        flip_idx = jax.random.choice(rng, np.arange(h*w), p=wall_mask)
+        flip_y = flip_idx//w
+        flip_x = flip_idx%w
+
+        flip_val = ~wall_map.at[flip_y,flip_x].get()
+        next_wall_map = wall_map.at[flip_y,flip_x].set(flip_val)
+
+        return state.replace(wall_map=next_wall_map)
+
+
+    def move_goal(rng, state):
+        wall_map = state.wall_map
+        h,w = wall_map.shape
+        wall_mask = wall_map.flatten()
+
+        goal_idx = w*state.goal_pos[1] + state.goal_pos[0]
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        door_idx = w*state.door_pos[1] + state.door_pos[0]
+        key_idx = w*state.key_pos[1] + state.key_pos[0]
+        wall_mask = wall_mask.at[goal_idx].set(True)
+        wall_mask = wall_mask.at[agent_idx].set(True)
+        wall_map = wall_mask.at[door_idx].set(True)
+        wall_map = wall_mask.at[key_idx].set(True)
+
+        next_goal_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
+        next_goal_y = next_goal_idx//w
+        next_goal_x = next_goal_idx%w
+
+        next_wall_map = wall_map.at[next_goal_y,next_goal_x].set(False)
+        next_goal_pos = jnp.array([next_goal_x,next_goal_y], dtype=jnp.uint32)
+
+        return state.replace(wall_map=next_wall_map, goal_pos=next_goal_pos)
+    
+    def move_key(rng, state):
+        wall_map = state.wall_map
+        h,w = wall_map.shape
+        wall_mask = wall_map.flatten()
+
+        goal_idx = w*state.goal_pos[1] + state.goal_pos[0]
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        door_idx = w*state.door_pos[1] + state.door_pos[0]
+        key_idx = w*state.key_pos[1] + state.key_pos[0]
+        wall_mask = wall_mask.at[goal_idx].set(True)
+        wall_mask = wall_mask.at[agent_idx].set(True)
+        wall_mask = wall_mask.at[door_idx].set(True)
+        wall_map = wall_mask.at[key_idx].set(True)
+
+        next_key_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
+        next_key_y = next_key_idx//w
+        next_key_x = next_key_idx%w
+
+        next_wall_map = wall_map.at[next_key_y,next_key_x].set(False)
+        next_key_pos = jnp.array([next_key_x,next_key_y], dtype=jnp.uint32)
+
+        return state.replace(wall_map=next_wall_map, key_pos=next_key_pos)
+    
+    def move_door(rng, state):
+        wall_map = state.wall_map
+        h,w = wall_map.shape
+        wall_mask = wall_map.flatten()
+
+        goal_idx = w*state.goal_pos[1] + state.goal_pos[0]
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        door_idx = w*state.door_pos[1] + state.door_pos[0]
+        key_idx = w*state.key_pos[1] + state.key_pos[0]
+        wall_mask = wall_mask.at[goal_idx].set(True)
+        wall_mask = wall_mask.at[agent_idx].set(True)
+        wall_mask = wall_mask.at[key_idx].set(True)
+        wall_map = wall_mask.at[door_idx].set(True)
+
+        next_door_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
+        next_door_y = next_door_idx//w
+        next_door_x = next_door_idx%w
+
+        next_wall_map = wall_map.at[next_door_y,next_door_x].set(False)
+        next_door_pos = jnp.array([next_door_x,next_door_y], dtype=jnp.uint32)
+
+        return state.replace(wall_map=next_wall_map, door_pos=next_door_pos)
 
     def move_goal_flip_walls(rng, level, n=1):
         def _mutate(carry, step):
