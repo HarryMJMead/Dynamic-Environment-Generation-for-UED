@@ -10,7 +10,7 @@ group: DR
 lr: 2.4e-4
 max_grad_norm: 0.5
 
-num_updates: 30000
+num_updates: 15000
 num_env_steps: null
 num_steps: 256
 num_train_envs: 256

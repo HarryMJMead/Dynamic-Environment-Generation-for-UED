@@ -490,12 +490,7 @@ def compute_score(config, dones, values, max_returns, advantages):
         return max_mc(dones, values, max_returns)
     elif config['score_function'] == "pvl":
         return positive_value_loss(dones, advantages)
-    elif config['score_function'] == "nvl":
-        return negative_value_loss(dones, advantages)
-    elif config['score_function'] == "nvl_s":
-        solved = max_returns > 0
-        return negative_value_loss_solved(dones, advantages, solved)
-    elif config['score_function'] == "nvl_s_sum" or config['score_function'] == "max_clipped_nvl_s":
+    elif config['score_function'] == "mna":
         solved = max_returns > 0
         return negative_value_loss_solved_sum(advantages, solved)
     else:
@@ -666,7 +661,7 @@ def main(config=None, project="JAXUED_TEST"):
             shortest_path = jax.vmap(get_shortest_path, in_axes=[0,])(new_levels)
             unsolvable = shortest_path == jnp.inf
             score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
-            if config["score_function"] == "max_clipped_nvl_s":
+            if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             max_returns = compute_max_returns(dones, rewards)
             scores = compute_score(config, dones, values, max_returns, score_advantages)
@@ -728,7 +723,7 @@ def main(config=None, project="JAXUED_TEST"):
                 config["num_steps"],
             )
             score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
-            if config["score_function"] == "max_clipped_nvl_s":
+            if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             max_returns = jnp.maximum(level_sampler.get_levels_extra(sampler, level_inds)["max_return"], compute_max_returns(dones, rewards))
             unsolvable = level_sampler.get_levels_extra(sampler, level_inds)["unsolvable"]
@@ -797,7 +792,7 @@ def main(config=None, project="JAXUED_TEST"):
             shortest_path = jax.vmap(get_shortest_path, in_axes=[0,])(child_levels)
             unsolvable = shortest_path == jnp.inf
             score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
-            if config["score_function"] == "max_clipped_nvl_s":
+            if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             max_returns = compute_max_returns(dones, rewards)
             scores = compute_score(config, dones, values, max_returns, score_advantages)

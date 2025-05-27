@@ -757,10 +757,6 @@ def main(config=None, project="JAXUED_TEST"):
             "misc/key_optimal":   stats['key_optimal'].mean(),
             "misc/unsolvable":   stats['unsolvable'].mean(),
             "misc/unsolvable_approx":   stats['unsolvable_approx'].mean(),
-            "misc/top_adv_perf_mean": stats['top_adv_returns'].mean(),
-            "misc/top_unsolvable": stats['top_unsolvable'].mean(),
-            "misc/top_key_optimal": stats['top_key_optimal'].mean(),
-            "misc/NVL": stats['NVL'].mean(),
         }
         
         # evaluation performance
@@ -834,62 +830,6 @@ def main(config=None, project="JAXUED_TEST"):
         agent_dir = jax.random.randint(rng_dir, (), 0, 4, dtype=jnp.uint8)
         return ObservedLevel(
             wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
-            observation_map=observation_map.at[agent_pos[1], agent_pos[0]].set(True),
-            width=w,
-            height=h,
-            
-            # These values don't matter, as the adversary overwrites them.
-            goal_pos=jnp.array([0, 0], dtype=jnp.uint32),
-            agent_pos=agent_pos,
-            agent_dir=agent_dir,
-            goal_placed=jnp.array(False, dtype=jnp.bool_),
-        )
-    
-    def sample_random_init_level_partial_fill(rng):
-        DIR_TO_VEC = jnp.array([
-            (1, 0), # right
-            (0, 1), # down
-            (-1, 0), # left
-            (0, -1), # up
-        ], dtype=jnp.int8)
-
-        w, h = env._env.max_width, env._env.max_height
-        rng, rng_pos, rng_dir = jax.random.split(rng, 3)
-        agent_pos = jax.random.randint(rng_pos, (2,), 0, jnp.array([h, w]), dtype=jnp.uint32)
-        agent_dir = jax.random.randint(rng_dir, (), 0, 4, dtype=jnp.uint8)
-        agent_view_size = env._env.agent_view_size
-
-        dir_vec = DIR_TO_VEC[agent_dir]
-                
-        obs_fwd_bound1 = agent_pos
-        obs_fwd_bound2 = agent_pos + dir_vec*(agent_view_size-1)
-
-        side_offset = agent_view_size//2
-        obs_side_bound1 = agent_pos + (dir_vec == 0)*side_offset
-        obs_side_bound2 = agent_pos - (dir_vec == 0)*side_offset
-
-        all_bounds = jnp.stack([obs_fwd_bound1, obs_fwd_bound2, obs_side_bound1, obs_side_bound2])
-
-        padding = agent_view_size-1
-        xmin, ymin = jnp.min(all_bounds, 0) + padding
-
-        rng, rng_obs, rng_wall = jax.random.split(rng, 3)
-        obs_fill = jax.random.bernoulli(rng_obs, p=config['obs_fill_prob'], shape=(agent_view_size, agent_view_size))
-        wall_fill = jnp.logical_and(obs_fill, jax.random.bernoulli(rng_wall, p=config['wall_fill_prob'], shape=(agent_view_size, agent_view_size)))
-
-        start = (ymin, xmin)
-        padded_zeros = jnp.zeros((h + 2*padding, w + 2*padding), dtype=jnp.bool_)
-        observation_map_padded = jax.lax.dynamic_update_slice(padded_zeros, obs_fill, start)
-        wall_map_padded = jax.lax.dynamic_update_slice(padded_zeros, wall_fill, start)
-
-        # Extract the maps corresponding to the original dimensions.
-        slice_start = (padding, padding)
-        slice_size = (h, w)
-        observation_map = jax.lax.dynamic_slice(observation_map_padded, slice_start, slice_size)
-        wall_map = jax.lax.dynamic_slice(wall_map_padded, slice_start, slice_size)
-
-        return ObservedLevel(
-            wall_map=wall_map.at[agent_pos[1], agent_pos[0]].set(False),
             observation_map=observation_map.at[agent_pos[1], agent_pos[0]].set(True),
             width=w,
             height=h,
@@ -991,8 +931,7 @@ def main(config=None, project="JAXUED_TEST"):
         
         # Initialise Levels
         rng, _rng = jax.random.split(rng)
-        #empty_levels = jax.vmap(sample_random_init_level)(jax.random.split(_rng, config["num_train_envs"]))
-        empty_levels = jax.vmap(sample_random_init_level_partial_fill)(jax.random.split(_rng, config["num_train_envs"]))
+        empty_levels = jax.vmap(sample_random_init_level)(jax.random.split(_rng, config["num_train_envs"]))
 
         # Gather Trajectories
         (rng, (pro_carry, adv_carry), (pro_traj, adv_traj), (pro_last_value, adv_last_value), pro_locations, student_adv_idxs, student_adv_env_states) = sample_trajectories(
@@ -1047,11 +986,6 @@ def main(config=None, project="JAXUED_TEST"):
         agent_extra_regret = jnp.nan_to_num((1 + agent_extra_optimal_distances[1:]) - (agent_extra_optimal_distances[:-1]), 0) * (1 - dones)
         mean_extra_ep_regret = agent_extra_regret.sum(axis=0)/pro_extra_eps
 
-        # Additional Rollouts for determining level solvability
-        adv_env_state_repeated = jax.tree_map(lambda x:x.repeat(config["unsolvable_approx_rollouts"], axis=0), adv_env_state_modified)
-        _, (_, extra_rewards, _) = rollout(_rng, env, env_params, train_state.pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"]*config["unsolvable_approx_rollouts"],)), adv_env_state_repeated.level, config['student_num_steps'], 'student_', num_envs=config["num_train_envs"]*config["unsolvable_approx_rollouts"])
-        extra_unsolvable_approx = extra_rewards.reshape(-1, config["num_train_envs"], config["unsolvable_approx_rollouts"]).sum(axis=0).mean(axis=1) == 0
-        
         # Get Rollouts for Protagonist and Antagonist
         def get_trajectory_metrics(traj, carry, last_value, locations, num_traj):
             rollout, (dones, rewards, update_mask) = get_rollout(traj, carry[4], last_value, 'student_')
@@ -1073,75 +1007,22 @@ def main(config=None, project="JAXUED_TEST"):
             return rollout, mean_rewards, mean_returns, max_returns, eps, regret, agent_regret, update_mask.reshape(target_shape)
 
         pro_rollout, pro_rewards, pro_mean_returns, pro_max_returns, pro_eps, pro_regret, step_regret, step_count = get_trajectory_metrics(pro_traj, pro_carry, pro_last_value, pro_locations, config['num_pro_traj'])
-        #pro_extra_rewards = jnp.zeros(pro_rewards.shape).at[pro_carry[4]-1, jnp.arange(pro_rewards.shape[1])].set(pro_extra_mean_returns)
 
         obs, actions, rewards, dones, log_probs, values, info = adv_traj
         dones = jnp.zeros_like(dones).at[adv_carry[4]-1, jnp.arange(dones.shape[1])].set(True)
         adv_pro_dones = jnp.logical_or(jnp.zeros_like(dones).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].set(pro_traj[3]), dones)
 
-        # Cap Regret on Mean Extra Regret
-        def get_capped_regret(carry, regret_step):
-            regret_sum = carry
-            new_regret_sum = jnp.minimum(regret_sum + regret_step, mean_extra_ep_regret[..., None])
-            #new_regret_sum = regret_sum + regret_step
-            return new_regret_sum, new_regret_sum - regret_sum
-
-        _, min_capped_agent_regret = jax.lax.scan(get_capped_regret, jnp.zeros(step_regret.shape[1:]), step_regret)
-        capped_mean_regret = min_capped_agent_regret.mean(axis=-1)
-
-        mean_regret = step_regret.mean(axis=-1)
-
+        # Compute Actual Level Solvability
         shortest_path = agent_extra_optimal_distances[0]
         unsolvable = shortest_path == jnp.inf
-        unsolvable_penalty = dones * unsolvable * config['unsolvable_penalty']
 
-        # Assign Metric to Adv - REGRET
-        # sparse_rewards = jnp.zeros(rewards.shape).at[adv_carry[4]-1, jnp.arange(rewards.shape[1])].set(mean_regret.sum(axis=0))
-        # dense_rewards = jnp.zeros(rewards.shape).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].add(mean_regret)
-        # rewards = config["reward_mix"] * dense_rewards + (1 - config["reward_mix"]) * sparse_rewards
-        # rewards /= config["student_num_steps"] # Normalise Regret
-
-        # Assign Metric to Adv - MINIMAX
-        step_penalty = (step_count.mean(axis=-1)*0.9/250)*(pro_mean_returns > 0)
-        # mean_extra_ep_length = jnp.minimum((1 - pro_extra_mean_returns)*250/0.9, 250)
-        # capped_pro_ep_length = jnp.minimum(mean_extra_ep_length, pro_carry[4])
-        # #capped_step_penalty = 0.9/250*(jnp.arange(config['student_num_steps']).reshape(-1, 1) < capped_pro_ep_length)*(pro_mean_returns > 0)
-        # capped_step_penalty = 0.9/250*(jnp.arange(config['student_num_steps']).reshape(-1, 1) < capped_pro_ep_length)*jnp.logical_or(pro_mean_returns > 0, pro_regret > 0)
-
-        # sparse_rewards = jnp.zeros(rewards.shape).at[adv_carry[4]-1, jnp.arange(rewards.shape[1])].set(step_penalty.sum(axis=0))
-        # dense_rewards = jnp.zeros(rewards.shape).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].add(step_penalty)
-        # rewards = config["reward_mix"] * dense_rewards + (1 - config["reward_mix"]) * sparse_rewards
-
-        # Assign Metric to Adv - MINIMAX 2
+        # Compute Approximate Solvability
         agent_failed = pro_mean_returns == 0
-        agent_failed_penalty = adv_pro_dones * agent_failed * config['unsolvable_penalty']
 
-        # mean_steps = step_count.mean(axis=-1) * (~unsolvable)
-        # sparse_rewards = jnp.zeros(rewards.shape).at[adv_carry[4]-1, jnp.arange(rewards.shape[1])].set(mean_steps.sum(axis=0))
-        # dense_rewards = jnp.zeros(rewards.shape).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].add(mean_steps)
-        # rewards = config["reward_mix"] * dense_rewards + (1 - config["reward_mix"]) * sparse_rewards - unsolvable_penalty
-        # rewards /= config["student_num_steps"] # Normalise Regret
-
-        # Assign Metric to Adv - NVL
-        unsolvable_approx = jnp.logical_and(jnp.logical_and(pro_mean_returns == 0, pro_extra_mean_returns == 0), extra_unsolvable_approx)
-        unsolvable_approx_penalty = dones * unsolvable_approx * config['unsolvable_penalty']
-
-        pro_traj_length = pro_carry[4]
+        # Calculate Metrics
         _, _, pro_dones, _, pro_values, targets, advantages, update_mask = pro_rollout
-        NVL = jnp.minimum((advantages * update_mask), 0) * (~agent_failed)
-        PVL = jnp.maximum((advantages * update_mask), 0) #* (~agent_failed)
+        PVL = jnp.maximum((advantages * update_mask), 0)
         MaxMC = pro_max_returns - pro_values
-
-
-        NVL_VT = jnp.minimum((targets * advantages * update_mask), 0) * (~agent_failed)
-        AbsAdv = jnp.abs(advantages * update_mask) * (~agent_failed)
-
-        #NVL = NVL / pro_eps
-
-        has_future_done = jnp.cumsum(pro_dones[::-1], axis=0)[::-1] > 0 
-        masked_NVL = jnp.where(has_future_done, NVL, 0)
-
-        masked_NVL = masked_NVL / pro_eps
 
         def get_clipped_advantages(traj, last_value, prefix, num_envs=config["num_train_envs"]):
             obs, actions, rewards, dones, log_probs, values, info = traj
@@ -1150,21 +1031,23 @@ def main(config=None, project="JAXUED_TEST"):
         clipped_advantages = get_clipped_advantages(pro_traj, pro_last_value, 'student_')
         clipped_advantages_reward = clipped_advantages * update_mask * (~agent_failed)
 
-        sparse_rewards = jnp.zeros(rewards.shape).at[adv_carry[4]-1, jnp.arange(rewards.shape[1])].set(-clipped_advantages_reward.sum(axis=0))
-        dense_rewards = jnp.zeros(rewards.shape).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].add(-clipped_advantages_reward)
-        rewards = config["reward_mix"] * dense_rewards + (1 - config["reward_mix"]) * sparse_rewards - agent_failed_penalty / config["student_num_steps"]
+        if config['score_function'] == "MaxMC":
+            optimisation_metric = MaxMC
+        elif config['score_function'] == "pvl":
+            optimisation_metric = PVL
+        elif config['score_function'] == "mna":
+            optimisation_metric = -clipped_advantages_reward
+        else:
+            raise ValueError(f"Unknown score function: {config['score_function']}")
+        
+        sparse_rewards = jnp.zeros(rewards.shape).at[adv_carry[4]-1, jnp.arange(rewards.shape[1])].set(optimisation_metric.sum(axis=0))
+        dense_rewards = jnp.zeros(rewards.shape).at[student_adv_idxs-1, jnp.arange(rewards.shape[1])].add(optimisation_metric)
+        rewards = config["reward_mix"] * dense_rewards + (1 - config["reward_mix"]) * sparse_rewards
 
         adv_traj = obs, actions, rewards, dones, log_probs, values, info
         adv_rollout, _ = get_rollout(adv_traj, adv_carry[4], adv_last_value, 'adv_')
 
-        sorted_args = jnp.argsort(rewards.sum(axis=0))
-        sorted_adv_rollout, sorted_pro_extra_rollout, sorted_rewards = jax.tree_map(lambda x: jnp.take(x, sorted_args[-config["pro_train_subset_envs"]:], axis=1), (adv_rollout, pro_extra_rollout, rewards))
-        sorted_unsolvable, sorted_key_optimal = jax.tree_map(lambda x: jnp.take(x, sorted_args[-config["pro_train_subset_envs"]:], axis=0), (unsolvable, key_optimal))
-
         (rng, pro_train_state), pro_losses = update(rng, train_state.pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"]*config["num_pro_traj"],)), pro_rollout, "student_", num_envs=config["num_train_envs"]*config["num_pro_traj"])
-        #(rng, pro_train_state), pro_losses = update(rng, train_state.pro_train_state, ActorCritic.initialize_carry((config["pro_train_subset_envs"],)), sorted_pro_extra_rollout, "student_", num_envs=config["pro_train_subset_envs"])
-        #(rng, pro_train_state), pro_losses = update(rng, train_state.pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"],)), pro_extra_rollout, "student_", num_envs=config["num_train_envs"])
-
         (rng, adv_train_state), adv_losses = update(rng, train_state.adv_train_state, AdversaryActorCritic.initialize_carry((config["num_train_envs"],)), adv_rollout, "adv_", num_envs=config["num_train_envs"])
 
         adv_last_env_state = adv_carry[2]
@@ -1188,11 +1071,7 @@ def main(config=None, project="JAXUED_TEST"):
             "pro_extra_regret": mean_extra_ep_regret,
             "key_optimal": key_optimal,
             "unsolvable": unsolvable,
-            "unsolvable_approx": unsolvable_approx,
-            "top_adv_returns": sorted_rewards.sum(axis=0),
-            "top_unsolvable": sorted_unsolvable,
-            "top_key_optimal": sorted_key_optimal,
-            "NVL": NVL.sum(axis=0),
+            "unsolvable_approx": agent_failed,
         }
 
         train_state = train_state.replace(

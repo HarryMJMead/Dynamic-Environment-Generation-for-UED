@@ -24,3 +24,6 @@ eval_levels: [
 
 # === ENV CONFIG ===
 agent_view_size: 5
+
+# === WandB ===
+group: DEGen

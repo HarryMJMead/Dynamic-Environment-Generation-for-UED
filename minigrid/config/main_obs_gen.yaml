@@ -5,21 +5,18 @@ defaults:
   - _self_
 
 # === Obs Gen ===
-sparse: False
-mixed: False
-min_capped: False
 num_pro_traj: 1
 num_plans: 3
-reward_mix: 0.9
+reward_mix: 1
 set_start: False
-unsolvable_penalty: 10
+score_function: mna
 
 # === Env ===
 max_height: 13
 max_width: 13
 
 # === PPO === 
-num_updates: 30000
+num_updates: 15000
 num_env_steps: null
 num_train_envs: 256
 # === Student hyperparams ===
@@ -39,11 +36,11 @@ student_kl_coeff: 0
 adv_random_z_dimension: 16
 adv_zero_out_random_z: False
 adv_num_steps: 171
-adv_lr: 2.4e-4
+adv_lr: 1e-3
 adv_anneal_lr: True
 adv_max_grad_norm: 0.5
 adv_num_minibatches: 4
-adv_gamma: 0.995
+adv_gamma: 0.99
 adv_epoch_ppo: 4
 adv_clip_eps: 0.2
 adv_gae_lambda: 0.95

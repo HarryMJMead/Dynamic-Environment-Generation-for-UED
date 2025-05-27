@@ -1,6 +1,6 @@
 project: key_minigrid_UED
 run_name: None
-seed: 3113242
+seed: 1
 # === Train vs Eval ===
 mode: train
 checkpoint_directory: None
@@ -24,3 +24,6 @@ eval_levels: [
 
 # === ENV CONFIG ===
 agent_view_size: 5
+
+# === WandB ===
+group: DEGen
