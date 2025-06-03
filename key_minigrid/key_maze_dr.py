@@ -422,7 +422,7 @@ def main(config=None, project="JAXUED_TEST"):
         wandb.log(log_dict)
     
     # Setup the environment
-    env = Maze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True, key_reward=config['key_reward'])
+    env = Maze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
     eval_env = env
     sample_random_level = make_level_w_key_generator(env.max_height, env.max_width, config["n_walls"])
     env_renderer = MazeRenderer(env, tile_size=8)

@@ -1,0 +1,13 @@
+env_name: "Key_Minigrid-v0"
+N_WALLS: 60
+AGENT_VIEW_SIZE: 5
+"EVAL_NUM_ATTEMPTS": 5
+"EVAL_LEVELS":
+  - "SixteenRooms_Key"
+  - "SixteenRooms2_Key"
+  - "FourRooms_Key"
+  - "FourRooms2_Key"
+  - "FourRooms3_Key"
+  - "StandardMaze_Key"
+  - "StandardMaze2_Key"
+  - "StandardMaze3_Key"

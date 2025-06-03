@@ -795,7 +795,7 @@ def main(config=None, project="JAXUED_TEST"):
         
         wandb.log(log_dict)
     
-    env = Maze(max_height=config['max_height'], max_width=config['max_width'], agent_view_size=5, normalize_obs=True, key_reward=config['key_reward'])
+    env = Maze(max_height=config['max_height'], max_width=config['max_width'], agent_view_size=5, normalize_obs=True)
     adv_env = LocalKeyMazeEditorRotateSplitAct(env, random_z_dimensions=config['adv_random_z_dimension'], zero_out_random_z=config['adv_zero_out_random_z'], num_agents=config["num_pro_traj"], agent_view_size=5)
     eval_env = Maze(max_height=13, max_width=13, agent_view_size=5, normalize_obs=True)
     adv_env_renderer = ObservedMazeRenderer(env, tile_size=8)

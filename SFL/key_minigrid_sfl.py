@@ -120,7 +120,7 @@ def main(config):
     
     assert (config["learning"]["NUM_ENVS_FROM_SAMPLED"] +  config["learning"]["NUM_ENVS_TO_GENERATE"]) == config["learning"]["NUM_ENVS"]
     
-    env = Maze(max_height=13, max_width=13, agent_view_size=config["env"]["AGENT_VIEW_SIZE"], normalize_obs=True, key_reward=config["env"]["key_reward"])
+    env = Maze(max_height=13, max_width=13, agent_view_size=config["env"]["AGENT_VIEW_SIZE"], normalize_obs=True)
     sample_random_level = make_level_w_key_generator(env.max_height, env.max_width, config["env"]["N_WALLS"])
     eval_env = env
     env_renderer = MazeRenderer(env, tile_size=8)
