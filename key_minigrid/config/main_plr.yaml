@@ -8,7 +8,7 @@ group: PLR
 
 # === PPO ===
 anneal_lr: False
-num_updates: 15000
+num_updates: 30000
 num_env_steps: null
 num_train_envs: 256
 num_steps: 512

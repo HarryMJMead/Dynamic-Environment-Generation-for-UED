@@ -1,0 +1,8 @@
+defaults:
+  - main_obs_gen
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+num_ant_traj: 1
+adv_gamma: 0.999

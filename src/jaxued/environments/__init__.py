@@ -1,2 +1,2 @@
 from .underspecified_env import UnderspecifiedEnv
-from .maze import Maze, MazeEditor, MazeSolved, MazeRenderer, ObservedMazeRenderer, LocalObservedMazeRenderer
+from .maze import Maze, SokobanMaze, MazeEditor, MazeSolved, MazeRenderer, ObservedMazeRenderer, LocalObservedMazeRenderer

@@ -8,11 +8,11 @@ endif
 
 
 # Set flag for docker run command
-MYUSER=user
-BASE_FLAGS=-it -d --rm -v ${PWD}:/home/$(MYUSER) --shm-size 20G --name degen
+MYUSER=hmead
+BASE_FLAGS=-it -d --rm -v ${PWD}:/home/$(MYUSER) --shm-size 20G --name degen_hmead
 RUN_FLAGS=$(GPUS) $(BASE_FLAGS)
 
-DOCKER_IMAGE_NAME = degen
+DOCKER_IMAGE_NAME = degen_hmead
 IMAGE = $(DOCKER_IMAGE_NAME):latest
 DOCKER_RUN=docker run $(RUN_FLAGS) $(IMAGE)
 USE_CUDA = $(if $(GPUS),true,false)

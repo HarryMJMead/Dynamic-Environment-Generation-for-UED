@@ -1,4 +1,5 @@
 from .env import Maze
+from .env_sokoban import SokobanMaze
 from .env_editor import MazeEditor
 from .env_solved import MazeSolved
 from .renderer import MazeRenderer, ObservedMazeRenderer, LocalObservedMazeRenderer
