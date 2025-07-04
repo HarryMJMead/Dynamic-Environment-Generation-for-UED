@@ -42,6 +42,7 @@ class EnvState:
     terminal: bool
     agent_locs: chex.Array = None
     agent_dirs: chex.Array = None
+    box_locs: chex.Array = None
 
 @struct.dataclass
 class Observation:
@@ -58,6 +59,7 @@ class Observation:
     door_placed: chex.Array = None
     agent_dirs: chex.Array = None
     agent_values: chex.Array = None
+    agent_boxes: chex.Array = None
     
 @struct.dataclass
 class EnvParams:
@@ -85,6 +87,7 @@ class MazeEditor(UnderspecifiedEnv):
         self.agent_view_size = agent_view_size
         self.set_start = set_start
         self.set_init_pos = set_init_pos
+        self.show_boxes = False
 
     @property
     def default_params(self) -> EnvParams:
@@ -135,7 +138,7 @@ class MazeEditor(UnderspecifiedEnv):
         
         #action_mask = jnp.concatenate([~state.level.observation_map.flatten()]*2)
         
-        maze_map = make_maze_map(state.level, ignore_goal=state.time==0)
+        maze_map = make_maze_map(state.level, ignore_goal=state.time==0, show_boxes=self.show_boxes)
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1], state.level.agent_pos[0]].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )
@@ -161,7 +164,8 @@ class MazeEditor(UnderspecifiedEnv):
             time=jnp.array(0, dtype=jnp.uint32),
             terminal=False,
             agent_locs=jnp.tile(level.agent_pos, (self.num_agents, 1)),
-            agent_dirs=jnp.tile(level.agent_dir, (self.num_agents))
+            agent_dirs=jnp.tile(level.agent_dir, (self.num_agents)),
+            box_locs=jnp.tile(level.box_map, (self.num_agents, 1, 1))
         )
         
     def _edit_level(self, rng: chex.PRNGKey, state: EnvState, edit_idx: int, params: EnvParams) -> Tuple[EnvState, float]:
@@ -367,7 +371,7 @@ class ObservedMazeEditorWithGoal(MazeEditor):
         action_mask = jnp.concatenate([~state.level.observation_map.flatten()]*2 + [jnp.logical_and(~state.level.observation_map.flatten(), ~state.level.goal_placed)])
         #action_mask = jnp.concatenate([~state.level.observation_map.flatten()]*3)
         
-        maze_map = make_maze_map(state.level, ignore_goal=state.time==0)
+        maze_map = make_maze_map(state.level, ignore_goal=state.time==0, show_boxes=self.show_boxes)
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1], state.level.agent_pos[0]].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )
@@ -507,7 +511,7 @@ class LocalMazeEditor(MazeEditor):
         return obs, obs_map, action_mask
 
     def get_finished_obs(self, rng: chex.Array, state: EnvState, not_done: chex.Array):
-        maze_map = make_maze_map(state.level, padding=self.agent_view_size-1)
+        maze_map = make_maze_map(state.level, padding=self.agent_view_size-1, show_boxes=self.show_boxes)
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1] + self.agent_view_size-1, state.level.agent_pos[0] + self.agent_view_size-1].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )
@@ -545,7 +549,7 @@ class LocalMazeEditor(MazeEditor):
         #action_mask = jnp.concatenate([~state.level.observation_map.flatten()]*2 + [jnp.logical_and(~state.level.observation_map.flatten(), ~state.level.goal_placed)])
         #action_mask = jnp.concatenate([~state.level.observation_map.flatten()]*3)
         
-        maze_map = make_maze_map(state.level, padding=self.agent_view_size-1)
+        maze_map = make_maze_map(state.level, padding=self.agent_view_size-1, show_boxes=self.show_boxes)
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1] + self.agent_view_size-1, state.level.agent_pos[0] + self.agent_view_size-1].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )

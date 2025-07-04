@@ -1,0 +1,45 @@
+defaults:
+  - common
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+group: PLR
+
+# === PPO ===
+anneal_lr: False
+num_updates: 30000
+num_env_steps: null
+num_train_envs: 256
+num_steps: 512
+lr: 2.4e-4
+max_grad_norm: 0.5
+num_minibatches: 4
+gamma: 0.995
+epoch_ppo: 4
+clip_eps: 0.04
+gae_lambda: 0.95
+entropy_coeff: 1e-3
+critic_coeff: 0.5
+
+
+  # === PLR ===
+score_function: max_clipped_nvl_s #choices=["MaxMC", "pvl"]
+clipped_score_advantages: False
+exploratory_grad_updates: False
+level_buffer_capacity: 8000
+replay_prob: 0.5
+staleness_coeff: 0.3
+temperature: 1.0
+topk_k: 32
+minimum_fill_ratio: 0.5
+prioritization: rank #choices=["rank", "topk"]
+buffer_duplicate_check: True
+  # === ACCEL ===
+use_accel: False
+num_edits: 5
+
+# === DR CONFIG ===
+n_walls: 60
+max_height: 13
+max_width: 13
