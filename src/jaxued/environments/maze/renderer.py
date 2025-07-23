@@ -136,7 +136,7 @@ class LocalObservedMazeRenderer(ObservedMazeRenderer):
         
         if self._render_boxes:
             agents = jnp.where(env_state.box_locs.any(axis=0), 12, agents)
-            box_color_mask = (env_state.box_locs * jnp.linspace(100, 255, 2)[..., None, None]).max(axis=0)
+            box_color_mask = (env_state.box_locs * jnp.linspace(100, 255, 2)[..., None, None]).max(axis=0).astype(jnp.uint8)
             color_mask = jnp.where(env_state.box_locs.any(axis=0), box_color_mask, color_mask)
 
         if self.render_border:

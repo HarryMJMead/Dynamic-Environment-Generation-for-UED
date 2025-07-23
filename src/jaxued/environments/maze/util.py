@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import chex
-from .level import Level
+from .level import Level, ObservedLevel
 from .env import DIR_TO_VEC
 from enum import IntEnum
 import numpy as np
@@ -71,17 +71,55 @@ def make_level_w_key_generator(height: int, width: int, n_walls: int):
         occupied_mask = occupied_mask.at[goal_idx].set(True)
         goal_pos = jnp.array([goal_idx%max_w, goal_idx//max_w], dtype=jnp.uint32).flatten()
 
-        # Reset goal position
+        # Reset door position
         door_idx = jax.random.choice(rng_door, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
         occupied_mask = occupied_mask.at[door_idx].set(True)
         door_pos = jnp.array([door_idx%max_w, door_idx//max_w], dtype=jnp.uint32).flatten()
 
-        # Reset goal position
+        # Reset key position
         key_idx = jax.random.choice(rng_key, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
         occupied_mask = occupied_mask.at[key_idx].set(True)
         key_pos = jnp.array([key_idx%max_w, key_idx//max_w], dtype=jnp.uint32).flatten()
         
         return Level(wall_map, goal_pos, agent_pos, agent_dir, width, height, True, key_pos, 1, door_pos, 1)
+    
+    return sample
+
+def make_level_sokoban_generator(height: int, width: int, n_walls: int, n_boxes: int):
+    def sample(rng: chex.PRNGKey) -> Level:
+        max_w, max_h = width, height
+        all_pos = jnp.arange(max_w * max_h, dtype=jnp.uint32)
+        valid_mask = (all_pos % max_w < width) & (all_pos < max_w * height)
+    
+        rng_wall, rng_box, rng_agent_pos, rng_agent_dir, rng_goal, rng_door, rng_key = jax.random.split(rng, 7)
+        # n_walls = jax.random.choice(rng_n_walls, n_walls+1)
+        
+        choices = jax.random.choice(rng_wall, max_w*max_h, shape=(max_w*max_h,), p=valid_mask, replace=True)
+        choices = jnp.where(all_pos < n_walls, choices, choices[0])
+        occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[choices].set(n_walls > 0) | ~valid_mask
+        wall_map = occupied_mask.reshape(max_h, max_w)
+
+        box_choices = jax.random.choice(rng_box, max_w*max_h, shape=(max_w*max_h,), p=(~occupied_mask), replace=True)
+        box_choices = jnp.where(all_pos < n_boxes, box_choices, box_choices[0])
+        box_occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[box_choices].set(n_boxes > 0)
+        box_map = box_occupied_mask.reshape(max_h, max_w)
+
+        occupied_mask = jnp.logical_or(occupied_mask, box_occupied_mask)
+
+        # Reset agent position + dir
+        agent_idx = jax.random.choice(rng_agent_pos, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[agent_idx].set(True)
+        agent_pos = jnp.array([agent_idx%max_w, agent_idx//max_w], dtype=jnp.uint32).flatten()
+
+        # Reset agent direction
+        agent_dir = jax.random.choice(rng_agent_dir, jnp.arange(len(DIR_TO_VEC), dtype=jnp.uint8))
+
+        # Reset goal position
+        goal_idx = jax.random.choice(rng_goal, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
+        occupied_mask = occupied_mask.at[goal_idx].set(True)
+        goal_pos = jnp.array([goal_idx%max_w, goal_idx//max_w], dtype=jnp.uint32).flatten()
+        
+        return ObservedLevel(wall_map, goal_pos, agent_pos, agent_dir, width, height, True, box_map=box_map, observation_map=jnp.ones_like(wall_map))
     
     return sample
 

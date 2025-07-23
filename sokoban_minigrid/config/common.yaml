@@ -1,4 +1,4 @@
-project: key_minigrid_UED_Testing
+project: sokoban_minigrid_UED_Testing
 run_name: None
 seed: 1
 # === Train vs Eval ===
@@ -12,14 +12,14 @@ max_number_of_checkpoints: 5
 eval_freq: 100
 eval_num_attempts: 10
 eval_levels: [
-    "SixteenRooms_Key",
-    "SixteenRooms2_Key",
-    "FourRooms_Key",
-    "FourRooms2_Key",
-    "FourRooms3_Key",
-    "StandardMaze_Key",
-    "StandardMaze2_Key",
-    "StandardMaze3_Key",
+    "SixteenRooms_Sokoban",
+    "SixteenRooms2_Sokoban",
+    "FourRooms_Sokoban",
+    "FourRooms2_Sokoban",
+    "FourRooms3_Sokoban",
+    "Detour_Sokoban",
+    "Detour2_Sokoban",
+    "MultiStep_Sokoban",
 ]
 
 # === ENV CONFIG ===

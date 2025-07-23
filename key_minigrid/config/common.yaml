@@ -1,4 +1,4 @@
-project: key_minigrid_UED_Testing
+project: key_minigrid_UED_Checkpoint
 run_name: None
 seed: 1
 # === Train vs Eval ===

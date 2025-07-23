@@ -4,6 +4,10 @@ defaults:
   - override hydra/hydra_logging: colorlog
   - _self_
 
+# === CHECKPOINTING ===
+checkpoint_save_interval: 5000
+max_number_of_checkpoints: 10
+
 # === Obs Gen ===
 num_pro_traj: 1
 reward_mix: 1

@@ -639,3 +639,28 @@ prefabs = {
 @struct.dataclass
 class ObservedLevel(Level):
     observation_map: chex.Array = None
+
+    @classmethod
+    def from_str(cls, level_str):
+        level = Level.from_str(level_str)
+        # By default, observation_map is fully observed (all True)
+        observation_map = jnp.ones_like(level.wall_map, dtype=jnp.bool_)
+        return ObservedLevel(
+            wall_map=level.wall_map,
+            goal_pos=level.goal_pos,
+            agent_pos=level.agent_pos,
+            agent_dir=level.agent_dir,
+            width=level.width,
+            height=level.height,
+            goal_placed=level.goal_placed,
+            key_pos=level.key_pos,
+            key_placed=level.key_placed,
+            door_pos=level.door_pos,
+            door_placed=level.door_placed,
+            box_map=level.box_map,
+            observation_map=observation_map,
+        )
+    
+    @classmethod
+    def load_prefabs(cls, ids):
+        return ObservedLevel.stack([ObservedLevel.from_str(prefabs[id]) for id in ids])
