@@ -1,4 +1,4 @@
-project: minigrid_UED
+project: minigrid_UED_Checkpoint
 run_name: None
 seed: 913472234
 # === Train vs Eval ===

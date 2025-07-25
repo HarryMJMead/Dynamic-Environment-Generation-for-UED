@@ -7,8 +7,17 @@ from flax import struct
 from gymnax.environments import spaces
 from jaxued.environments import UnderspecifiedEnv
 from .level import ObservedLevel, prefabs
-from .env import Actions, EnvState, Observation, EnvParams, Maze, make_maze_map
-    
+from .env import EnvState, Observation, EnvParams, Maze, make_maze_map
+
+class Actions(IntEnum):
+    left = 0    # Turn left
+    right = 1   # Turn right
+    forward = 2 # Move forward
+    use = 3  # Pick up an object
+    reset = 4    # Drop an object
+    # toggle = 5  # Toggle/activate an object
+    # done = 6    # Done completing task
+
 OBJECT_TO_INDEX = {
     "unseen": 0,
     "empty": 1,
@@ -73,13 +82,23 @@ class SokobanMaze(Maze):
         )
         self.show_boxes = True
 
+    def action_space(self, params: EnvParams) -> spaces.Discrete:
+        """Action space of the environment."""
+        return spaces.Discrete(len(Actions))
+
     def init_state_from_level(self, level: ObservedLevel) -> EnvState:
-        return super().init_state_from_level(level).replace(observation_map=level.observation_map)
+        return super().init_state_from_level(level).replace(observation_map=level.observation_map, 
+                                                            box_map_reset=jnp.array(level.box_map, dtype=jnp.bool_), 
+                                                            agent_pos_reset=jnp.array(level.agent_pos, dtype=jnp.uint32),
+                                                            agent_dir_reset=jnp.array(level.agent_dir, dtype=jnp.uint8))
 
     def update_state_from_level(self, level, state):
-        level = level.replace(box_map=jnp.where(state.observation_map, state.box_map, level.box_map))
-        obs, state = super().update_state_from_level(level, state)
-        return obs, state.replace(observation_map=level.observation_map)
+        update_level = level.replace(box_map=jnp.where(state.observation_map, state.box_map, level.box_map))
+        obs, state = super().update_state_from_level(update_level, state)
+        return obs, state.replace(observation_map=level.observation_map,
+                                  box_map_reset=jnp.array(level.box_map, dtype=jnp.bool_),
+                                  agent_pos_reset=jnp.array(level.agent_pos, dtype=jnp.uint32),
+                                  agent_dir_reset=jnp.array(level.agent_dir, dtype=jnp.uint8))
 
     def _step_agent(self, rng: chex.PRNGKey, state: EnvState, action: int, params: EnvParams) -> Tuple[EnvState, float]:
         # Update agent position (forward action)
@@ -144,10 +163,22 @@ class SokobanMaze(Maze):
         unlock_door = jnp.logical_and(jnp.logical_and(fwd_pos_has_door, action == Actions.use), agent_has_key)
         door_placed = state.door_placed * (1 - unlock_door) + 2*unlock_door
 
+        boxes_remaining = jnp.logical_xor(box_map, state.box_goal_map).any()
+        boxes_finished = jnp.logical_and(box_map, state.box_goal_map).sum()
+        box_complete = jnp.logical_and(boxes_remaining == 0, boxes_finished >= state.max_boxes)
+        
+        level_finished = jnp.logical_or(box_complete, fwd_pos_has_goal)
+
+        # Reset Level
+        agent_pos = jax.lax.select(action == Actions.reset, state.agent_pos_reset, agent_pos)
+        agent_dir = jax.lax.select(action == Actions.reset, state.agent_dir_reset, agent_dir)
+        box_map = jax.lax.select(action == Actions.reset, state.box_map_reset, box_map)
+
+
         if self.penalize_time:
-            reward = (1.0 - 0.9*((state.time+1)/params.max_steps_in_episode))*fwd_pos_has_goal
+            reward = (1.0 - 0.9*((state.time+1)/params.max_steps_in_episode))*level_finished
         else:
-            reward = jax.lax.select(fwd_pos_has_goal, 1., 0.)
+            reward = jax.lax.select(level_finished, 1., 0.)
         
         if self.key_reward > 0:
             reward = reward + self.key_reward * jnp.logical_and(key_placed == 2, state.key_placed == 1) + self.key_reward * jnp.logical_and(door_placed == 2, state.door_placed == 1)
@@ -156,7 +187,7 @@ class SokobanMaze(Maze):
             state.replace(
                 agent_pos=agent_pos,
                 agent_dir=agent_dir,  
-                terminal=fwd_pos_has_goal,
+                terminal=level_finished,
                 has_key=agent_has_key,
                 key_placed=key_placed,
                 door_placed=door_placed,

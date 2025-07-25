@@ -12,14 +12,16 @@ max_number_of_checkpoints: 5
 eval_freq: 100
 eval_num_attempts: 10
 eval_levels: [
-    "SixteenRooms_Sokoban",
-    "SixteenRooms2_Sokoban",
-    "FourRooms_Sokoban",
-    "FourRooms2_Sokoban",
-    "FourRooms3_Sokoban",
-    "Detour_Sokoban",
-    "Detour2_Sokoban",
-    "MultiStep_Sokoban",
+    "Sokoban_Jr_1_02",
+    "Sokoban_Jr_1_03",
+    "Sokoban_Jr_1_04",
+    "Sokoban_Jr_1_05",
+    "Sokoban_Jr_1_06",
+    "Sokoban_Jr_1_07",
+    "Sokoban_Jr_1_08",
+    "Sokoban_Jr_1_09",
+    "Sokoban_Jr_1_12",
+    "Sokoban_Jr_1_16"
 ]
 
 # === ENV CONFIG ===

@@ -559,19 +559,20 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
 NO_KL = False
-GOAL_PROB = 0.01
-WALL_PROB = (1 - 6*GOAL_PROB)/2
+BOX_PROB = 0.1
+LAST_BOX_PROB = 0.02
+WALL_PROB = (1 - (2 + LAST_BOX_PROB)*BOX_PROB)/2
 
 EMPTY_PROB_SEP = False
-EMPTY_PROB = 0.7 - 6*GOAL_PROB
+EMPTY_PROB = 0.7 - (2 + LAST_BOX_PROB)*BOX_PROB
 class DoubleCategorical(distrax.Distribution):
     def __init__(self, logits_1, logits_2):
         self.pi_1 = distrax.Categorical(logits=logits_1)
         self.pi_2 = distrax.Categorical(logits=logits_2)
 
-        target_probs = jnp.array([WALL_PROB, WALL_PROB, GOAL_PROB, 5*GOAL_PROB])
+        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
         if EMPTY_PROB_SEP:
-            target_probs = jnp.array([EMPTY_PROB, 0.3, GOAL_PROB, 5*GOAL_PROB])
+            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
         self.target_pi = distrax.Categorical(probs=target_probs)
 
     def _sample_n(self, key, n):
@@ -636,6 +637,7 @@ class AdversaryActorCritic(nn.Module):
     action_dim: Sequence[int]
     max_timesteps: int = 50
     student_max_timesteps: int = 250
+    max_boxes: int = 10
     
     @nn.compact
     def __call__(self, inputs: Tuple[Observation, chex.Array], hidden):
@@ -648,7 +650,9 @@ class AdversaryActorCritic(nn.Module):
         time_value = nn.Embed(self.max_timesteps + 1, 10, name="time_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.time, None, self.max_timesteps))
         student_time_value = nn.Embed(self.student_max_timesteps + 1, 10, name="student_time_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.agent_steps, None, self.student_max_timesteps))
         dirs_embedding = jax.nn.one_hot(obs.agent_dirs, 4).reshape(*obs.agent_dirs.shape[:2], -1)
-        embedding = jnp.concatenate((img_embed, time_value, student_time_value, obs.agent_values, obs.place_goal[..., None], obs.goal_placed, dirs_embedding), axis=-1)
+        box_embedding = nn.Embed(self.max_boxes + 1, 10, name="box_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.box_count, None, self.max_boxes))
+        box_goal_embedding = nn.Embed(self.max_boxes + 1, 10, name="box_goal_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.box_goal_count, None, self.max_boxes))
+        embedding = jnp.concatenate((img_embed, time_value, student_time_value, obs.agent_values, obs.place_goal[..., None], obs.goal_placed, dirs_embedding, box_embedding, box_goal_embedding), axis=-1)
 
         hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=256))((embedding, dones), initial_carry=hidden)
         embedding = nn.LayerNorm()(embedding)
@@ -657,7 +661,7 @@ class AdversaryActorCritic(nn.Module):
         actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = nn.tanh(actor_mean)
         actor_mean_0 = nn.Dense(25, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor10")(actor_mean)
-        actor_mean_1 = nn.Dense(4, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
+        actor_mean_1 = nn.Dense(5, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
 
         # Mask out this
         actor_mean_0 = jnp.where(obs.action_mask[0], actor_mean_0, -jnp.inf)
@@ -714,7 +718,8 @@ def main(config=None, project="JAXUED_TEST"):
     wandb_config = OmegaConf.to_container(
             config, resolve=True, throw_on_missing=False
         )
-    wandb_config["goal_prob"] = GOAL_PROB
+    wandb_config["box_prob"] = BOX_PROB
+    wandb_config["last_box_prob"] = LAST_BOX_PROB
     wandb_config["no_kl"] = NO_KL
     wandb_config["empty_prob_separate"] = EMPTY_PROB_SEP
     tags = ["obs_gen", "local", "NVL", "key"]
@@ -746,7 +751,7 @@ def main(config=None, project="JAXUED_TEST"):
             "misc/pro_extra_perf_max": stats['pro_extra_max_returns'].mean(),
             "misc/pro_extra_num_episodes": stats['pro_extra_eps'].mean(),
             "misc/unsolvable_approx":   stats['unsolvable_approx'].mean(),
-            "misc/agent_path_blocked": stats['agent_path_blocked'].mean(),
+            "misc/mean_num_boxes": stats['num_boxes'].mean(),
         }
         
         # evaluation performance
@@ -760,10 +765,10 @@ def main(config=None, project="JAXUED_TEST"):
         def make_caption(i):
             pro_mean_returns = jnp.round(stats['pro_returns'][-1][i], 2) # .flatten()
             pro_extra_mean_returns = jnp.round(stats['pro_extra_mean_returns'][-1][i], 2) # .flatten()
-            agent_path_blocked = stats['agent_path_blocked'][-1][i]
+            num_boxes = stats['num_boxes'][-1][i]
             unsolvable_approx = stats['unsolvable_approx'][-1][i]
             adv_return = jnp.round(stats['adv_returns'][-1][i], 2) # .flatten()
-            return f"P({pro_mean_returns:.2f}, {pro_extra_mean_returns:.2f})Adv({adv_return:.2f})|B({agent_path_blocked})|U({unsolvable_approx})"
+            return f"P({pro_mean_returns:.2f}, {pro_extra_mean_returns:.2f})Adv({adv_return:.2f})|B({num_boxes})|U({unsolvable_approx})"
 
         log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
 
@@ -800,6 +805,8 @@ def main(config=None, project="JAXUED_TEST"):
         return ObservedLevel(
             wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_map=jnp.zeros((h, w), dtype=jnp.bool_),
+            box_goal_map=jnp.zeros((h, w), dtype=jnp.bool_),
+            max_boxes=jnp.array(config['max_boxes'], dtype=jnp.uint8),
             observation_map=jnp.zeros((h, w), dtype=jnp.bool_),
             width=w,
             height=h,
@@ -810,7 +817,7 @@ def main(config=None, project="JAXUED_TEST"):
             agent_dir=jnp.array(0, dtype=jnp.uint8),
             goal_placed=jnp.array(False, dtype=jnp.bool_),
         )
-    
+
     def sample_random_init_level(rng):
         w, h = env._env.max_width, env._env.max_height
         observation_map = jnp.zeros((h, w), dtype=jnp.bool_)
@@ -820,6 +827,8 @@ def main(config=None, project="JAXUED_TEST"):
         return ObservedLevel(
             wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_map=jnp.zeros((h, w), dtype=jnp.bool_),
+            box_goal_map=jnp.zeros((h, w), dtype=jnp.bool_),
+            max_boxes=jnp.array(config['max_boxes'], dtype=jnp.uint8),
             observation_map=observation_map.at[agent_pos[1], agent_pos[0]].set(True),
             width=w,
             height=h,
@@ -864,7 +873,7 @@ def main(config=None, project="JAXUED_TEST"):
         return TrainState(
             update_count = 0,
             pro_train_state = create_inner_train_state(rng_pro, env, env_params, ActorCritic, "student_"),
-            adv_train_state = create_inner_train_state(rng_adv, adv_env, adv_env_params, AdversaryActorCritic, "adv_", network_kws={"max_timesteps": config["adv_num_steps"], "student_max_timesteps": config["max_steps_in_episode"]}),
+            adv_train_state = create_inner_train_state(rng_adv, adv_env, adv_env_params, AdversaryActorCritic, "adv_", network_kws={"max_timesteps": config["adv_num_steps"], "student_max_timesteps": config["max_steps_in_episode"], "max_boxes": config["max_boxes"]}),
         )
 
     def train_step(carry, _):
@@ -951,11 +960,6 @@ def main(config=None, project="JAXUED_TEST"):
         pro_extra_rollout, (dones, rewards, locations) = rollout(_rng, env, env_params, train_state.pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"],)), adv_env_state_modified.level, config['student_num_steps'], 'student_')
         pro_extra_mean_returns, pro_extra_max_returns, pro_extra_eps = compute_max_mean_returns_epcount(dones, rewards)
 
-        agent_path_blocked = jax.vmap(
-            check_agent_path_box,
-            in_axes=(0, 1)
-        )(adv_env_state_modified, locations.reshape(-1, config['num_train_envs'], 1, 4))
-
         # Get Rollouts for Protagonist and Antagonist
         def get_trajectory_metrics(traj, carry, last_value, locations, num_traj):
             rollout, (dones, rewards, update_mask) = get_rollout(traj, carry[4], last_value, 'student_')
@@ -1026,7 +1030,7 @@ def main(config=None, project="JAXUED_TEST"):
             "pro_extra_max_returns": pro_extra_max_returns,
             "pro_extra_eps": pro_extra_eps,
             "unsolvable_approx": agent_failed,
-            "agent_path_blocked": agent_path_blocked,
+            "num_boxes": levels.box_map.sum(axis=(1,2)),
         }
 
         train_state = train_state.replace(

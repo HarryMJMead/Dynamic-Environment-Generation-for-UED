@@ -16,7 +16,7 @@ DIR_TO_VEC = jnp.array([
     (0, -1), # up
 ], dtype=jnp.int8)
 
-TOTAL_OBJECT_TYPES = 4
+TOTAL_OBJECT_TYPES = 5
 class LocalSokobanMazeEditor(LocalMazeEditor):
     def __init__(self, env: Maze, random_z_dimensions: int = 16, zero_out_random_z: bool = False, num_agents = 2, agent_view_size = 5, set_start = False, set_init_pos = True):
         super().__init__(
@@ -69,7 +69,12 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         )
         box_map = jax.lax.dynamic_slice(padded_box_map, (ymin, xmin), (self.agent_view_size, self.agent_view_size))
 
-        action_mask = jnp.concatenate([~obs_map.flatten()]*2 + [jnp.logical_and(~obs_map.flatten(), ~level.goal_placed)] + [jnp.logical_and(~obs_map.flatten(), True)])
+        total_boxes = level.box_map.sum()
+        total_box_goals = level.box_goal_map.sum()
+        action_mask = jnp.concatenate([~obs_map.flatten()]*2 + 
+                                      [jnp.logical_and(~obs_map.flatten(), total_boxes < level.max_boxes - 1)] + 
+                                      [jnp.logical_and(~obs_map.flatten(), total_box_goals < level.max_boxes)] +
+                                      [jnp.logical_and(~obs_map.flatten(), jnp.logical_and(total_boxes >= total_box_goals-1, total_boxes < level.max_boxes))])
 
         return obs, obs_map, box_map, action_mask
 
@@ -105,6 +110,8 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
             agent_dirs=state.agent_dirs,
             agent_values=jnp.zeros((self.num_agents,), dtype=jnp.float32),
             agent_boxes=box_map,
+            box_count=jnp.array(state.level.box_map.sum(), dtype=jnp.uint32),
+            box_goal_count=jnp.array(state.level.box_goal_map.sum(), dtype=jnp.uint32),
         )
 
     def get_obs(self, rng: chex.Array, state: EnvState):
@@ -142,6 +149,8 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
             agent_dirs=state.agent_dirs,
             agent_values=jnp.zeros((self.num_agents,), dtype=jnp.float32),
             agent_boxes=box_map,
+            box_count=jnp.array(state.level.box_map.sum(), dtype=jnp.uint32),
+            box_goal_count=jnp.array(state.level.box_goal_map.sum(), dtype=jnp.uint32),
         )
 
     def _edit_level(self, rng: chex.PRNGKey, state: EnvState, edit_idx: int, params: EnvParams) -> Tuple[EnvState, float]:
@@ -224,6 +233,22 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
 
             return level.replace(box_map=level.box_map.at[y, x].set(True), observation_map=level.observation_map.at[y, x].set(True))
         
+        def set_last_box():
+            level = state.level
+            
+            # if attempting to toggle wall on top of agent or goal, do nothing
+            x, y = edit_loc_idx % self.agent_view_size + xmin, edit_loc_idx // self.agent_view_size + ymin
+
+            return level.replace(max_boxes=jnp.array(level.box_map.sum()+1, dtype=jnp.uint8), box_map=level.box_map.at[y, x].set(True), observation_map=level.observation_map.at[y, x].set(True))
+
+        def toggle_box_goal():
+            level = state.level
+
+            # if attempting to toggle wall on top of agent or goal, do nothing
+            x, y = edit_loc_idx % self.agent_view_size + xmin, edit_loc_idx // self.agent_view_size + ymin
+
+            return level.replace(box_goal_map=level.box_goal_map.at[y, x].set(True), observation_map=level.observation_map.at[y, x].set(True))
+
         def set_agent_locs():
             agent_locs=jnp.tile(level.agent_pos, (self.num_agents, 1))
             agent_dirs=jnp.tile(level.agent_dir, (self.num_agents))
@@ -236,7 +261,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
                 rotate_agent,
                 move_agent_x,
                 move_agent_y,
-                lambda: jax.lax.switch(edit_goal, [toggle_wall, move_goal, toggle_box])
+                lambda: jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, set_last_box])
             ])
 
             state = jax.tree_map(
@@ -245,8 +270,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
                 state
             )
         else:
-            level = jax.lax.switch(edit_goal, [toggle_wall, move_goal, toggle_box])
-        
+            level = jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, set_last_box])
         return state.replace(level=level)
 
 class LocalSokobanMazeEditorRotate(LocalSokobanMazeEditor):
@@ -259,7 +283,12 @@ class LocalSokobanMazeEditorRotate(LocalSokobanMazeEditor):
         
         obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, include_agent)    
         obs, obs_map, box_map = jax.tree_map(rotate, (obs, obs_map, box_map))
-        action_mask = jnp.concatenate([~obs_map.flatten()]*2 + [jnp.logical_and(~obs_map.flatten(), ~level.goal_placed)] + [jnp.logical_and(~obs_map.flatten(), True)])
+        total_boxes = level.box_map.sum()
+        total_box_goals = level.box_goal_map.sum()
+        action_mask = jnp.concatenate([~obs_map.flatten()]*2 + 
+                                      [jnp.logical_and(~obs_map.flatten(), total_boxes < level.max_boxes - 1)] + 
+                                      [jnp.logical_and(~obs_map.flatten(), total_box_goals < level.max_boxes)] +
+                                      [jnp.logical_and(~obs_map.flatten(), jnp.logical_and(total_boxes >= total_box_goals-1, total_boxes < level.max_boxes))])
         return obs, obs_map, box_map, action_mask
     
     def _edit_level(self, rng, state, edit_idx, params):
@@ -301,7 +330,9 @@ class LocalSokobanMazeEditorRotateSplitAct(LocalSokobanMazeEditorRotate):
     def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, include_agent=True):
         obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, include_agent)    
         action_mask_loc = ~obs_map.flatten()
-        action_mask_type = jnp.array([True, True, ~level.goal_placed, True])
+        total_boxes = level.box_map.sum()
+        total_box_goals = level.box_goal_map.sum()
+        action_mask_type = jnp.array([True, True, total_boxes < level.max_boxes - 1, total_box_goals < level.max_boxes, jnp.logical_and(total_boxes >= total_box_goals-1, total_boxes < level.max_boxes)])
         return obs, obs_map, box_map, (action_mask_loc, action_mask_type)
     
     def _edit_level(self, rng, state, edit_idxs, params):

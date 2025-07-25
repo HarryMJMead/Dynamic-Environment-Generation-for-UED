@@ -91,7 +91,7 @@ def make_level_sokoban_generator(height: int, width: int, n_walls: int, n_boxes:
         all_pos = jnp.arange(max_w * max_h, dtype=jnp.uint32)
         valid_mask = (all_pos % max_w < width) & (all_pos < max_w * height)
     
-        rng_wall, rng_box, rng_agent_pos, rng_agent_dir, rng_goal, rng_door, rng_key = jax.random.split(rng, 7)
+        rng_wall, rng_box, rng_agent_pos, rng_agent_dir, rng_box_goal, rng_num_boxes, rng_key = jax.random.split(rng, 7)
         # n_walls = jax.random.choice(rng_n_walls, n_walls+1)
         
         choices = jax.random.choice(rng_wall, max_w*max_h, shape=(max_w*max_h,), p=valid_mask, replace=True)
@@ -99,12 +99,20 @@ def make_level_sokoban_generator(height: int, width: int, n_walls: int, n_boxes:
         occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[choices].set(n_walls > 0) | ~valid_mask
         wall_map = occupied_mask.reshape(max_h, max_w)
 
-        box_choices = jax.random.choice(rng_box, max_w*max_h, shape=(max_w*max_h,), p=(~occupied_mask), replace=True)
-        box_choices = jnp.where(all_pos < n_boxes, box_choices, box_choices[0])
+        num_boxes = jax.random.randint(rng_num_boxes, (), 1, n_boxes + 1)
+
+        box_choices = jax.random.choice(rng_box, max_w*max_h, shape=(max_w*max_h,), p=(~occupied_mask), replace=False)
+        box_choices = jnp.where(all_pos < num_boxes, box_choices, box_choices[0])
         box_occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[box_choices].set(n_boxes > 0)
         box_map = box_occupied_mask.reshape(max_h, max_w)
 
+        box_goal_choices = jax.random.choice(rng_box_goal, max_w*max_h, shape=(max_w*max_h,), p=(~occupied_mask), replace=False)
+        box_goal_choices = jnp.where(all_pos < num_boxes, box_goal_choices, box_goal_choices[0])
+        box_goal_occupied_mask = jnp.zeros(max_w * max_h, dtype=jnp.bool_).at[box_goal_choices].set(n_boxes > 0)
+        box_goal_map = box_goal_occupied_mask.reshape(max_h, max_w)
+
         occupied_mask = jnp.logical_or(occupied_mask, box_occupied_mask)
+        occupied_mask = jnp.logical_or(occupied_mask, box_goal_occupied_mask)
 
         # Reset agent position + dir
         agent_idx = jax.random.choice(rng_agent_pos, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
@@ -115,11 +123,9 @@ def make_level_sokoban_generator(height: int, width: int, n_walls: int, n_boxes:
         agent_dir = jax.random.choice(rng_agent_dir, jnp.arange(len(DIR_TO_VEC), dtype=jnp.uint8))
 
         # Reset goal position
-        goal_idx = jax.random.choice(rng_goal, all_pos, shape=(1,), p=(~occupied_mask).astype(jnp.float32))
-        occupied_mask = occupied_mask.at[goal_idx].set(True)
-        goal_pos = jnp.array([goal_idx%max_w, goal_idx//max_w], dtype=jnp.uint32).flatten()
+        goal_pos = jnp.array([0, 0], dtype=jnp.uint32).flatten()
         
-        return ObservedLevel(wall_map, goal_pos, agent_pos, agent_dir, width, height, True, box_map=box_map, observation_map=jnp.ones_like(wall_map))
+        return ObservedLevel(wall_map, goal_pos, agent_pos, agent_dir, width, height, False, box_map=box_map, box_goal_map=box_goal_map, observation_map=jnp.ones_like(wall_map))
     
     return sample
 

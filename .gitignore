@@ -164,6 +164,7 @@ checkpoints
 results
 outputs
 hydra_examples/multirun/
+run_script.py
 
 #docker stuff
 .config/

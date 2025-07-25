@@ -48,7 +48,9 @@ class MazeRenderer(object):
         
         cells = jnp.where(env_state.wall_map, 1, 0)
         if self._render_boxes:
-            cells = jnp.where(~env_state.box_map, cells, jnp.ones_like(cells)*12)
+            cells = jnp.where(env_state.box_map, jnp.ones_like(cells)*12, cells)
+            cells = jnp.where(env_state.box_goal_map, jnp.ones_like(cells)*14, cells)
+            cells = jnp.where(jnp.logical_and(env_state.box_map, env_state.box_goal_map), jnp.ones_like(cells)*13, cells)
         if self._show_observations:
             cells = jnp.where(env_state.observation_map, cells, jnp.ones_like(cells)*7)
         if self.render_border:
@@ -136,6 +138,9 @@ class LocalObservedMazeRenderer(ObservedMazeRenderer):
         
         if self._render_boxes:
             agents = jnp.where(env_state.box_locs.any(axis=0), 12, agents)
+            overlap = jnp.logical_and(env_state.box_locs, env_state.level.box_goal_map)
+            agents = jnp.where(overlap.any(axis=0), 13, agents)
+
             box_color_mask = (env_state.box_locs * jnp.linspace(100, 255, 2)[..., None, None]).max(axis=0).astype(jnp.uint8)
             color_mask = jnp.where(env_state.box_locs.any(axis=0), box_color_mask, color_mask)
 
@@ -200,7 +205,7 @@ def _make_tile_atlas(tile_size):
 
         return fn
     
-    atlas = np.empty((13, tile_size, tile_size, 3), dtype=np.uint8)
+    atlas = np.empty((15, tile_size, tile_size, 3), dtype=np.uint8)
     
     def add_border(tile):
         new_tile = fill_coords(tile, point_in_rect(0, 0.031, 0, 1), (100, 100, 100)) 
@@ -274,5 +279,13 @@ def _make_tile_atlas(tile_size):
     box_tile = fill_coords(box_tile, point_in_rect(0.5-CENTRE_WIDTH/2, 0.5+CENTRE_WIDTH/2, 0, 1), (255, 255, 0))
     box_tile = fill_coords(box_tile, point_in_rect(0, 1, 0.5-CENTRE_WIDTH/2, 0.5+CENTRE_WIDTH/2), (255, 255, 0))
     atlas[12] = box_tile
+
+    atlas[13] = box_tile/2
+
+    # Box Goal Tile
+    SQUARE_SIZE = 0.4
+    box_goal_tile = np.tile([0, 0, 0], (tile_size, tile_size, 1))
+    box_goal_tile = fill_coords(box_goal_tile, point_in_rect(0.5-SQUARE_SIZE/2, 0.5+SQUARE_SIZE/2, 0.5-SQUARE_SIZE/2, 0.5+SQUARE_SIZE/2), (255, 255, 0))
+    atlas[14] = box_goal_tile
 
     return atlas

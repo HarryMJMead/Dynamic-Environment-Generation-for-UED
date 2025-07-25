@@ -60,6 +60,8 @@ class Observation:
     agent_dirs: chex.Array = None
     agent_values: chex.Array = None
     agent_boxes: chex.Array = None
+    box_count: int = 0
+    box_goal_count: int = 0
     
 @struct.dataclass
 class EnvParams:

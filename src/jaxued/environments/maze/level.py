@@ -3,6 +3,7 @@ import chex
 from flax import struct
 import jax
 import jax.numpy as jnp
+from .sokoban_levels import prefabs_sokoban
 
 @struct.dataclass
 class Level:
@@ -22,6 +23,8 @@ class Level:
     door_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
     
     box_map: chex.Array = jnp.array([[0]], dtype=jnp.bool_)
+    box_goal_map: chex.Array = jnp.array([[0]], dtype=jnp.bool_)
+    max_boxes: int = 0
     
     def is_well_formatted(self):
         wall_map_is_binary = jnp.all((self.wall_map == 0) | (self.wall_map == 1))
@@ -44,12 +47,14 @@ class Level:
         
         wall_map = np.zeros((nrows, ncols), dtype=bool)
         goal_pos = []
+        goal_placed = False
         agent_pos = None
         agent_dir = None
 
         key_pos = [(0, 0)]
         door_pos = [(0, 0)]
-        box_map = np.zeros((nrows, ncols), dtype=bool)  
+        box_map = np.zeros((nrows, ncols), dtype=bool)
+        box_goal_map = np.zeros((nrows, ncols), dtype=bool)  
         
         for y, row in enumerate(rows):
             for x, c in enumerate(row):
@@ -57,8 +62,14 @@ class Level:
                     wall_map[y, x] = True
                 elif c == 'B':
                     box_map[y, x] = True
+                elif c == 'H':
+                    box_goal_map[y, x] = True
+                elif c == 'A':
+                    box_map[y, x] = True
+                    box_goal_map[y, x] = True
                 elif c == 'G':
                     goal_pos.append((x, y))
+                    goal_placed = True
                 elif c == 'K':
                     key_pos.append((x, y))
                 elif c == 'D':
@@ -78,13 +89,14 @@ class Level:
                 elif c == '.':
                     pass
                 else:
-                    raise Exception("Unexpected character.")
+                    raise Exception(f"Unexpected character {c}")
         
-        assert len(goal_pos) > 0, "Goal position not set."
         assert agent_pos is not None, "Agent position not set."
+        if not goal_placed:
+            goal_pos = [(0, 0)]
         
-        return Level(jnp.array(wall_map), *map(lambda x: jnp.array(x, dtype=jnp.uint32), (goal_pos[0], agent_pos)), jnp.array(agent_dir, dtype=jnp.uint8), ncols, nrows, jnp.array(True, dtype=jnp.bool_), 
-                     door_pos=jnp.array(door_pos[-1], dtype=jnp.uint32), key_pos=jnp.array(key_pos[-1], dtype=jnp.uint32), door_placed=jnp.array(len(door_pos)>1, dtype=jnp.uint8), key_placed=jnp.array(len(key_pos)>1, dtype=jnp.uint8), box_map=box_map)
+        return Level(jnp.array(wall_map), *map(lambda x: jnp.array(x, dtype=jnp.uint32), (goal_pos[0], agent_pos)), jnp.array(agent_dir, dtype=jnp.uint8), ncols, nrows, jnp.array(goal_placed, dtype=jnp.bool_), 
+                     door_pos=jnp.array(door_pos[-1], dtype=jnp.uint32), key_pos=jnp.array(key_pos[-1], dtype=jnp.uint32), door_placed=jnp.array(len(door_pos)>1, dtype=jnp.uint8), key_placed=jnp.array(len(key_pos)>1, dtype=jnp.uint8), box_map=box_map, box_goal_map=box_goal_map, max_boxes=box_map.sum())
     
     def to_str(self):
         w, h = self.width, self.height
@@ -601,7 +613,7 @@ MultiStep_Sokoban = """
 """
 
 
-prefabs = {
+prefabs_original = {
     "TrivialMaze": TrivialMaze.strip(),
     "TrivialMaze2": TrivialMaze2.strip(),
     "TrivialMaze3": TrivialMaze3.strip(),
@@ -636,6 +648,8 @@ prefabs = {
     "MultiStep_Sokoban": MultiStep_Sokoban.strip(),
 }
 
+prefabs = {**prefabs_original, **prefabs_sokoban}
+
 @struct.dataclass
 class ObservedLevel(Level):
     observation_map: chex.Array = None
@@ -658,6 +672,8 @@ class ObservedLevel(Level):
             door_pos=level.door_pos,
             door_placed=level.door_placed,
             box_map=level.box_map,
+            box_goal_map=level.box_goal_map,
+            max_boxes=level.max_boxes,
             observation_map=observation_map,
         )
     

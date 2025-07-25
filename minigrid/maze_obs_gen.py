@@ -668,7 +668,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), "obs_generation/checkpoints", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), "checkpoints", f"{config['run_name']}", str(config['seed']))
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
@@ -695,6 +695,9 @@ def main(config=None, project="JAXUED_TEST"):
     
     tags = ["obs_gen", "local", "NVL", "unsolvable_penalty"]
     run = wandb.init(config=wandb_config, project=project, tags=tags, group=config['group'])
+
+    # Match Config Run name and WandB run name
+    config['run_name'] = run.name
     
     wandb.define_metric("num_updates")
     wandb.define_metric("num_env_steps")
@@ -1115,7 +1118,7 @@ def main(config=None, project="JAXUED_TEST"):
         metrics['time_delta'] = curr_time - start_time
         log_eval(metrics)
         if config["checkpoint_save_interval"] > 0:
-            checkpoint_manager.save(eval_step, args=ocp.args.StandardSave(runner_state[1]))
+            checkpoint_manager.save(int(metrics['update_count']), args=ocp.args.StandardSave(runner_state[1]))
             #checkpoint_manager.wait_until_finished()
     return runner_state[1]
 

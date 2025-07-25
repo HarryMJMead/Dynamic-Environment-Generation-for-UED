@@ -48,4 +48,5 @@ adv_entropy_coeff: 5e-2
 adv_critic_coeff: 0.5
 
 # === Generator Hyperparams ===
-goal_prob: 0.01
+box_prob: 0.15
+max_boxes: 10
