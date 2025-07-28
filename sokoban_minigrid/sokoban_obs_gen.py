@@ -559,8 +559,8 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
 NO_KL = False
-BOX_PROB = 0.1
-LAST_BOX_PROB = 0.02
+BOX_PROB = 0.3
+LAST_BOX_PROB = 0.01
 WALL_PROB = (1 - (2 + LAST_BOX_PROB)*BOX_PROB)/2
 
 EMPTY_PROB_SEP = False
@@ -652,7 +652,8 @@ class AdversaryActorCritic(nn.Module):
         dirs_embedding = jax.nn.one_hot(obs.agent_dirs, 4).reshape(*obs.agent_dirs.shape[:2], -1)
         box_embedding = nn.Embed(self.max_boxes + 1, 10, name="box_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.box_count, None, self.max_boxes))
         box_goal_embedding = nn.Embed(self.max_boxes + 1, 10, name="box_goal_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.box_goal_count, None, self.max_boxes))
-        embedding = jnp.concatenate((img_embed, time_value, student_time_value, obs.agent_values, obs.place_goal[..., None], obs.goal_placed, dirs_embedding, box_embedding, box_goal_embedding), axis=-1)
+        max_boxes_embedding = nn.Embed(self.max_boxes + 1, 10, name="max_boxes_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.max_boxes, None, self.max_boxes))
+        embedding = jnp.concatenate((img_embed, time_value, student_time_value, obs.agent_values, obs.place_goal[..., None], obs.goal_placed, dirs_embedding, box_embedding, box_goal_embedding, max_boxes_embedding), axis=-1)
 
         hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=256))((embedding, dones), initial_carry=hidden)
         embedding = nn.LayerNorm()(embedding)
