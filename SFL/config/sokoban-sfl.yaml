@@ -1,0 +1,6 @@
+defaults:
+  - minigrid-sfl
+  - env: key_minigrid
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_

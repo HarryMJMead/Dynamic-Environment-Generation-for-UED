@@ -165,7 +165,7 @@ class SokobanMaze(Maze):
 
         boxes_remaining = jnp.logical_xor(box_map, state.box_goal_map).any()
         boxes_finished = jnp.logical_and(box_map, state.box_goal_map).sum()
-        box_complete = jnp.logical_and(boxes_remaining == 0, boxes_finished >= state.max_boxes)
+        box_complete = jnp.logical_and(boxes_remaining == 0, boxes_finished >= jnp.maximum(state.max_boxes, 1))
         
         level_finished = jnp.logical_or(box_complete, fwd_pos_has_goal)
 

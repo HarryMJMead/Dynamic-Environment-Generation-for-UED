@@ -559,8 +559,8 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
 NO_KL = False
-BOX_PROB = 0.3
-LAST_BOX_PROB = 0.01
+BOX_PROB = 0.2
+LAST_BOX_PROB = 0.2
 WALL_PROB = (1 - (2 + LAST_BOX_PROB)*BOX_PROB)/2
 
 EMPTY_PROB_SEP = False
@@ -807,7 +807,7 @@ def main(config=None, project="JAXUED_TEST"):
             wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_goal_map=jnp.zeros((h, w), dtype=jnp.bool_),
-            max_boxes=jnp.array(config['max_boxes'], dtype=jnp.uint8),
+            max_boxes=jnp.array(0, dtype=jnp.uint8),
             observation_map=jnp.zeros((h, w), dtype=jnp.bool_),
             width=w,
             height=h,
@@ -829,7 +829,7 @@ def main(config=None, project="JAXUED_TEST"):
             wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_map=jnp.zeros((h, w), dtype=jnp.bool_),
             box_goal_map=jnp.zeros((h, w), dtype=jnp.bool_),
-            max_boxes=jnp.array(config['max_boxes'], dtype=jnp.uint8),
+            max_boxes=jnp.array(0, dtype=jnp.uint8),
             observation_map=observation_map.at[agent_pos[1], agent_pos[0]].set(True),
             width=w,
             height=h,
