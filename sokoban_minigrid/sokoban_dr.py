@@ -423,9 +423,10 @@ def main(config=None, project="JAXUED_TEST"):
     
     # Setup the environment
     env = SokobanMaze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
-    eval_env = env
+    eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
     sample_random_level = make_level_sokoban_generator(env.max_height, env.max_width, config["n_walls"], config['n_boxes'])
     env_renderer = MazeRenderer(env, tile_size=8, render_boxes=True)
+    eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
     env = AutoResetWrapper(env, sample_random_level)
     env_params = env.default_params
     
@@ -567,7 +568,7 @@ def main(config=None, project="JAXUED_TEST"):
         
         # just grab the first run
         states, episode_lengths = jax.tree_map(lambda x: x[0], (states, episode_lengths)) # (num_steps, num_eval_levels, ...), (num_eval_levels,)
-        images = jax.vmap(jax.vmap(env_renderer.render_state, (0, None)), (0, None))(states, env_params) # (num_steps, num_eval_levels, ...)
+        images = jax.vmap(jax.vmap(eval_env_renderer.render_state, (0, None)), (0, None))(states, env_params) # (num_steps, num_eval_levels, ...)
         frames = images.transpose(0, 1, 4, 2, 3) # WandB expects color channel before image dimensions when dealing with animations for some reason
         
         metrics["update_count"] = train_state.update_count
