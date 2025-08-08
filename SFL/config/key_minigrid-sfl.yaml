@@ -1,6 +1,25 @@
 defaults:
-  - minigrid-sfl
-  - env: key_minigrid
-  - override hydra/job_logging: colorlog
-  - override hydra/hydra_logging: colorlog
+  - env: key-minigrid
+  - learning: ippo-minigrid
   - _self_
+
+"SEED": 2
+"GROUP_NAME": "SFL"
+"ENTITY": ""
+"PROJECT": "key_minigrid_UED"
+"WANDB_MODE" : "online"
+"SAVE_PATH": "SFL/checkpoints/new_minigrid"
+
+learning:
+  "NUM_ENVS_FROM_SAMPLED": 128
+  "NUM_ENVS_TO_GENERATE": 128
+
+max_height: 13
+max_width: 13
+
+# SAMPLE LEARNABILITY 
+"BATCH_SIZE": 5000
+"NUM_BATCHES": 5
+"ROLLOUT_STEPS": 2000
+"NUM_TO_SAVE": 1000
+"EVAL_SAMPLED_SET_PATH": "SFL/data/sampled_test_set_100e_4a.pkl"

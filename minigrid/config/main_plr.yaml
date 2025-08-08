@@ -24,7 +24,7 @@ critic_coeff: 0.5
 
 
   # === PLR ===
-score_function: MaxMC #choices=["MaxMC", "pvl"]
+score_function: mna #choices=["mna", "MaxMC", "pvl"]
 exploratory_grad_updates: False
 level_buffer_capacity: 8000
 replay_prob: 0.5

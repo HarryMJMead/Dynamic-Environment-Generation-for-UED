@@ -7,12 +7,12 @@ defaults:
 group: PLR
 
 # === PPO ===
-anneal_lr: False
+anneal_lr: True
 num_updates: 30000
 num_env_steps: null
 num_train_envs: 256
 num_steps: 512
-lr: 2.4e-4
+lr: 5e-4
 max_grad_norm: 0.5
 num_minibatches: 4
 gamma: 0.995
@@ -24,7 +24,7 @@ critic_coeff: 0.5
 
 
   # === PLR ===
-score_function: max_clipped_nvl_s #choices=["MaxMC", "pvl"]
+score_function: mna #choices=["MaxMC", "pvl"]
 clipped_score_advantages: False
 exploratory_grad_updates: False
 level_buffer_capacity: 8000
@@ -43,3 +43,4 @@ num_edits: 5
 n_walls: 60
 max_height: 13
 max_width: 13
+n_boxes: 10

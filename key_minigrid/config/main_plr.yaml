@@ -12,7 +12,7 @@ num_updates: 30000
 num_env_steps: null
 num_train_envs: 256
 num_steps: 512
-lr: 2.4e-4
+lr: 5e-4
 max_grad_norm: 0.5
 num_minibatches: 4
 gamma: 0.995

@@ -15,10 +15,10 @@ import orbax.checkpoint as ocp
 import wandb
 from jaxued.environments.underspecified_env import EnvParams, EnvState, Observation, UnderspecifiedEnv
 from jaxued.linen import ResetRNN
-from jaxued.environments import Maze, MazeRenderer
-from jaxued.environments.maze import Level, make_level_w_key_generator, make_level_mutator_minimax
+from jaxued.environments import SokobanMaze, MazeRenderer
+from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator, make_level_mutator_minimax
 from jaxued.level_sampler import LevelSampler
-from jaxued.utils import compute_max_returns, max_mc, positive_value_loss, negative_value_loss, negative_value_loss_solved, negative_value_loss_solved_sum
+from jaxued.utils import compute_max_mean_returns_epcount, max_mc, positive_value_loss, negative_value_loss, negative_value_loss_solved, negative_value_loss_solved_sum
 from jaxued.wrappers import AutoReplayWrapper
 import chex
 from enum import IntEnum
@@ -545,8 +545,12 @@ def main(config=None, project="JAXUED_TEST"):
             "num_updates": stats["update_count"],
             "num_env_steps": env_steps,
             "sps": env_steps / stats['time_delta'],
-            "misc/unsolvable":   stats['unsolvable'].mean(),
-            "misc/key_optimal":   stats['key_optimal'].mean(),
+            "misc/unsolvable_approx":   stats['unsolvable_approx'].mean(),
+            "misc/mean_num_blocks": stats["mean_num_blocks"].mean(),
+            "misc/mean_num_boxes":   stats['num_boxes'].mean(),
+            "misc/prot_perf_mean": stats['pro_mean_returns'].mean(),
+            "misc/prot_perf_max":  stats['pro_max_returns'].mean(),
+            "misc/pro_num_episodes": stats['pro_eps'].mean(),
         }
         
         # evaluation performance
@@ -578,11 +582,11 @@ def main(config=None, project="JAXUED_TEST"):
         wandb.log(log_dict)
     
     # Setup the environment
-    env = Maze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
-    eval_env = Maze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
-    sample_random_level = make_level_w_key_generator(env.max_height, env.max_width, config["n_walls"])
-    env_renderer = MazeRenderer(env, tile_size=8)
-    eval_env_renderer = MazeRenderer(eval_env, tile_size=8)
+    env = SokobanMaze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
+    eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
+    sample_random_level = make_level_sokoban_generator(env.max_height, env.max_width, config["n_walls"], config['n_boxes'])
+    env_renderer = MazeRenderer(env, tile_size=8, render_boxes=True)
+    eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
     env = AutoReplayWrapper(env)
     env_params = env.default_params
     mutate_level = make_level_mutator_minimax(100)
@@ -624,7 +628,7 @@ def main(config=None, project="JAXUED_TEST"):
             optax.adam(learning_rate=learning_rate, eps=1e-5),
         )
         pholder_level = sample_random_level(jax.random.PRNGKey(0))
-        sampler = level_sampler.initialize(pholder_level, {"max_return": -jnp.inf, "unsolvable": True, "key_optimal": False})
+        sampler = level_sampler.initialize(pholder_level, {"max_return": -jnp.inf})
         pholder_level_batch = jax.tree_map(lambda x: jnp.array([x]).repeat(config["num_train_envs"], axis=0), pholder_level)
         return TrainState.create(
             apply_fn=network.apply,
@@ -644,24 +648,6 @@ def main(config=None, project="JAXUED_TEST"):
         """
             This is the main training loop. It basically calls either `on_new_levels`, `on_replay_levels`, or `on_mutate_levels` at every step.
         """
-        def get_shortest_path(level):
-            distances_to_goal = compute_min_steps_to_goal(level, jnp.array(True))
-            distances_to_goal_no_key = compute_min_steps_to_goal(level, jnp.array(False))
-
-            key_values = distances_to_goal[:, level.key_pos[1], level.key_pos[0]]
-            distances_via_key = compute_min_steps_to_goal(level, jnp.array(False), jnp.array(True), key_values)
-
-            all_optimal_distances = jnp.stack((
-                jnp.minimum(distances_via_key, distances_to_goal_no_key),
-                distances_to_goal
-            ))
-
-            key_optimal = (distances_via_key < distances_to_goal_no_key)[level.agent_dir, level.agent_pos[1], level.agent_pos[0]]
-            agent_pos = level.agent_pos
-            agent_dir = level.agent_dir
-
-            return all_optimal_distances[0, agent_dir, agent_pos[1], agent_pos[0]], key_optimal
-        
         def on_new_levels(rng: chex.PRNGKey, train_state: TrainState):
             """
                 Samples new (randomly-generated) levels and evaluates the policy on these. It also then adds the levels to the level buffer if they have high-enough scores.
@@ -688,14 +674,13 @@ def main(config=None, project="JAXUED_TEST"):
                 config["num_train_envs"],
                 config["num_steps"],
             )
-            shortest_path, key_optimal = jax.vmap(get_shortest_path, in_axes=[0,])(new_levels)
-            unsolvable = shortest_path == jnp.inf
             score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=config["clipped_score_advantages"])
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
-            max_returns = compute_max_returns(dones, rewards)
+            pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
+            max_returns = pro_max_returns
             scores = compute_score(config, dones, values, max_returns, score_advantages)
-            sampler, _ = level_sampler.insert_batch(sampler, new_levels, scores, {"max_return": max_returns, "unsolvable": unsolvable, "key_optimal": key_optimal})
+            sampler, _ = level_sampler.insert_batch(sampler, new_levels, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
             # Update: train_state only modified if exploratory_grad_updates is on
@@ -717,8 +702,11 @@ def main(config=None, project="JAXUED_TEST"):
             metrics = {
                 "losses": jax.tree_map(lambda x: x.mean(), losses),
                 "mean_num_blocks": new_levels.wall_map.sum() / config["num_train_envs"],
-                "unsolvable": unsolvable,
-                "key_optimal": key_optimal,
+                "num_boxes": new_levels.box_map.sum(axis=(1,2)),
+                "unsolvable_approx": max_returns == 0,
+                "pro_mean_returns": pro_mean_returns,
+                "pro_max_returns":  pro_max_returns,
+                "pro_eps": pro_eps,
             }
             
             train_state = train_state.replace(
@@ -757,11 +745,10 @@ def main(config=None, project="JAXUED_TEST"):
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             lvl_extra = level_sampler.get_levels_extra(sampler, level_inds)
-            max_returns = jnp.maximum(lvl_extra["max_return"], compute_max_returns(dones, rewards))
-            unsolvable = lvl_extra["unsolvable"]
-            key_optimal = lvl_extra["key_optimal"]
+            pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
+            max_returns = jnp.maximum(lvl_extra["max_return"], pro_max_returns)
             scores = compute_score(config, dones, values, max_returns, score_advantages)
-            sampler = level_sampler.update_batch(sampler, level_inds, scores, {"max_return": max_returns, "unsolvable": unsolvable, "key_optimal": key_optimal})
+            sampler = level_sampler.update_batch(sampler, level_inds, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
             # Update the policy using trajectories collected from replay levels
@@ -783,8 +770,11 @@ def main(config=None, project="JAXUED_TEST"):
             metrics = {
                 "losses": jax.tree_map(lambda x: x.mean(), losses),
                 "mean_num_blocks": levels.wall_map.sum() / config["num_train_envs"],
-                "unsolvable": unsolvable,
-                "key_optimal": key_optimal,
+                "num_boxes": levels.box_map.sum(axis=(1,2)),
+                "unsolvable_approx": max_returns == 0,
+                "pro_mean_returns": pro_mean_returns,
+                "pro_max_returns":  pro_max_returns,
+                "pro_eps": pro_eps,
             }
             
             train_state = train_state.replace(
@@ -823,14 +813,13 @@ def main(config=None, project="JAXUED_TEST"):
                 config["num_train_envs"],
                 config["num_steps"],
             )
-            shortest_path, key_optimal = jax.vmap(get_shortest_path, in_axes=[0,])(child_levels)
-            unsolvable = shortest_path == jnp.inf
             score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=config["clipped_score_advantages"])
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
-            max_returns = compute_max_returns(dones, rewards)
+            pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
+            max_returns = pro_max_returns
             scores = compute_score(config, dones, values, max_returns, score_advantages)
-            sampler, _ = level_sampler.insert_batch(sampler, child_levels, scores, {"max_return": max_returns, "unsolvable": unsolvable, "key_optimal": key_optimal})
+            sampler, _ = level_sampler.insert_batch(sampler, child_levels, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
             # Update: train_state only modified if exploratory_grad_updates is on
@@ -852,8 +841,11 @@ def main(config=None, project="JAXUED_TEST"):
             metrics = {
                 "losses": jax.tree_map(lambda x: x.mean(), losses),
                 "mean_num_blocks": child_levels.wall_map.sum() / config["num_train_envs"],
-                "unsolvable": unsolvable,
-                "key_optimal": key_optimal,
+                "num_boxes": child_levels.box_map.sum(axis=(1,2)),
+                "unsolvable_approx": max_returns == 0,
+                "pro_mean_returns": pro_mean_returns,
+                "pro_max_returns":  pro_max_returns,
+                "pro_eps": pro_eps,
             }
             
             train_state = train_state.replace(
@@ -891,7 +883,7 @@ def main(config=None, project="JAXUED_TEST"):
         It returns (states, cum_rewards, episode_lengths), with shapes (num_steps, num_eval_levels, ...), (num_eval_levels,), (num_eval_levels,)
         """
         rng, rng_reset = jax.random.split(rng)
-        levels = Level.load_prefabs(config["eval_levels"])
+        levels = ObservedLevel.load_prefabs(config["eval_levels"])
         num_levels = len(config["eval_levels"])
         init_obs, init_env_state = jax.vmap(eval_env.reset_to_level, (0, 0, None))(jax.random.split(rng_reset, num_levels), levels, env_params)
         states, rewards, episode_lengths = evaluate_rnn(

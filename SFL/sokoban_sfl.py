@@ -24,9 +24,9 @@ import wandb
 import matplotlib.pyplot as plt
 
 from jaxued.linen import ResetRNN
-from jaxued.environments import Maze, MazeRenderer
+from jaxued.environments import SokobanMaze, MazeRenderer
 from jaxued.wrappers import AutoReplayWrapper
-from jaxued.environments.maze import Level, make_level_generator, make_level_w_key_generator
+from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator
 
 from train_utils import save_params
 
@@ -100,7 +100,7 @@ class ActorCritic(nn.Module):
         return nn.OptimizedLSTMCell(features=256).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, 256))
         
 
-@hydra.main(version_base=None, config_path="config", config_name="key_minigrid-sfl")
+@hydra.main(version_base=None, config_path="config", config_name="sokoban-sfl")
 def main(config):
     
     config = OmegaConf.to_container(config)
@@ -120,10 +120,11 @@ def main(config):
     
     assert (config["learning"]["NUM_ENVS_FROM_SAMPLED"] +  config["learning"]["NUM_ENVS_TO_GENERATE"]) == config["learning"]["NUM_ENVS"]
     
-    env = Maze(max_height=13, max_width=13, agent_view_size=config["env"]["AGENT_VIEW_SIZE"], normalize_obs=True)
-    sample_random_level = make_level_w_key_generator(env.max_height, env.max_width, config["env"]["N_WALLS"])
-    eval_env = env
-    env_renderer = MazeRenderer(env, tile_size=8)
+    env = SokobanMaze(max_height=config["env"]["MAX_HEIGHT"], max_width=config["env"]["MAX_WIDTH"], agent_view_size=config["env"]["AGENT_VIEW_SIZE"], normalize_obs=True)
+    sample_random_level = make_level_sokoban_generator(env.max_height, env.max_width, config["env"]["N_WALLS"], config["env"]["N_BOXES"])
+    eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=config["env"]["AGENT_VIEW_SIZE"], normalize_obs=True)
+    env_renderer = MazeRenderer(env, tile_size=8, render_boxes=True)
+    eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
     env = AutoReplayWrapper(env)
     t_config = config["learning"]
         
@@ -337,7 +338,7 @@ def main(config):
         It returns (states, cum_rewards, episode_lengths), with shapes (num_steps, num_eval_levels, ...), (num_eval_levels,), (num_eval_levels,)
         """
         rng, rng_reset = jax.random.split(rng)
-        levels = Level.load_prefabs(config["EVAL_LEVELS"])
+        levels = ObservedLevel.load_prefabs(config["EVAL_LEVELS"])
         num_levels = len(config["EVAL_LEVELS"])
         init_obs, init_env_state = jax.vmap(eval_env.reset_to_level, (0, 0, None))(jax.random.split(rng_reset, num_levels), levels, env.default_params)
         states, rewards, episode_lengths = evaluate_rnn(
