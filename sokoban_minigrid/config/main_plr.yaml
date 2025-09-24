@@ -6,6 +6,10 @@ defaults:
 
 group: PLR
 
+# === CHECKPOINTING ===
+checkpoint_save_interval: 5000
+max_number_of_checkpoints: 10
+
 # === PPO ===
 anneal_lr: True
 num_updates: 30000

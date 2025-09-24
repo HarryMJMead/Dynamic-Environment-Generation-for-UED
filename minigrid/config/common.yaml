@@ -27,3 +27,4 @@ agent_view_size: 5
 
 # === WandB ===
 group: DEGen
+log_animations: False

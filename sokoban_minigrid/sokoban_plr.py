@@ -442,7 +442,7 @@ class ActorCritic(nn.Module):
 # region checkpointing
 def setup_checkpointing(config: dict, train_state: TrainState, env: UnderspecifiedEnv, env_params: EnvParams) -> ocp.CheckpointManager:
     """This takes in the train state and config, and returns an orbax checkpoint manager.
-        It also saves the config in `checkpoints/run_name/seed/config.json`
+        It also saves the config in `checkpoints/group/run_name/seed/config.json`
 
     Args:
         config (dict): 
@@ -453,20 +453,23 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), "checkpoints", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}", str(config['seed']))
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
+    config_dict = OmegaConf.to_container(config, resolve=True)
     with open(os.path.join(overall_save_dir, 'config.json'), 'w+') as f:
-        f.write(json.dumps(config.as_dict(), indent=True))
+        f.write(json.dumps(config_dict, indent=True))
     
     checkpoint_manager = ocp.CheckpointManager(
         os.path.join(overall_save_dir, 'models'),
         options=ocp.CheckpointManagerOptions(
             save_interval_steps=config['checkpoint_save_interval'],
             max_to_keep=config['max_number_of_checkpoints'],
+            enable_async_checkpointing=False,
         )
     )
+    
     return checkpoint_manager
 #endregion
 
@@ -527,6 +530,9 @@ def main(config=None, project="JAXUED_TEST"):
     #run = wandb.init(config=config, project=project, group=config["run_name"], tags=tags)
     run = wandb.init(config=wandb_config, project=project, tags=tags, group=config["group"])
     
+    # Match Config Run name and WandB run name
+    config['run_name'] = run.name
+
     wandb.define_metric("num_updates")
     wandb.define_metric("num_env_steps")
     wandb.define_metric("solve_rate/*", step_metric="num_updates")
@@ -571,13 +577,14 @@ def main(config=None, project="JAXUED_TEST"):
 
         for s in ['dr', 'replay', 'mutation']:
             if train_state_info['info'][f'num_{s}_updates'] > 0:
-                log_dict.update({f"images/{s}_levels": [wandb.Image(np.array(image)) for image in stats[f"{s}_levels"]][:32]})
+                log_dict.update({f"images/{s}_levels": [wandb.Image(np.array(image)) for image in stats[f"{s}_levels"]][:8]})
 
         # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+        if config["log_animations"]:
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
@@ -986,7 +993,7 @@ def main(config=None, project="JAXUED_TEST"):
         metrics['time_delta'] = curr_time - start_time
         log_eval(metrics, train_state_to_log_dict(runner_state[1], level_sampler))
         if config["checkpoint_save_interval"] > 0:
-            checkpoint_manager.save(eval_step, args=ocp.args.StandardSave(runner_state[1]))
+            checkpoint_manager.save(int(metrics['update_count']), args=ocp.args.StandardSave(runner_state[1]))
             checkpoint_manager.wait_until_finished()
     return runner_state[1]
 

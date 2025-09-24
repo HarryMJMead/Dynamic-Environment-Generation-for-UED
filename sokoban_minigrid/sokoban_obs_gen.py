@@ -561,7 +561,7 @@ def compute_min_steps_to_goal(level, with_boxes=False):
 NO_KL = False
 BOX_PROB = 0.2
 LAST_BOX_PROB = 0.2
-WALL_PROB = (1 - (2 + LAST_BOX_PROB)*BOX_PROB)/2
+WALL_PROB = (1 - (3 + LAST_BOX_PROB)*BOX_PROB)/2
 
 EMPTY_PROB_SEP = False
 EMPTY_PROB = 0.7 - (2 + LAST_BOX_PROB)*BOX_PROB
@@ -570,9 +570,9 @@ class DoubleCategorical(distrax.Distribution):
         self.pi_1 = distrax.Categorical(logits=logits_1)
         self.pi_2 = distrax.Categorical(logits=logits_2)
 
-        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
+        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
         if EMPTY_PROB_SEP:
-            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
+            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
         self.target_pi = distrax.Categorical(probs=target_probs)
 
     def _sample_n(self, key, n):
@@ -662,7 +662,7 @@ class AdversaryActorCritic(nn.Module):
         actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = nn.tanh(actor_mean)
         actor_mean_0 = nn.Dense(25, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor10")(actor_mean)
-        actor_mean_1 = nn.Dense(5, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
+        actor_mean_1 = nn.Dense(6, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
 
         # Mask out this
         actor_mean_0 = jnp.where(obs.action_mask[0], actor_mean_0, -jnp.inf)
@@ -684,7 +684,7 @@ class AdversaryActorCritic(nn.Module):
 # region checkpointing
 def setup_checkpointing(config: dict, train_state: TrainState, env: UnderspecifiedEnv, env_params: EnvParams) -> ocp.CheckpointManager:
     """This takes in the train state and config, and returns an orbax checkpoint manager.
-        It also saves the config in `checkpoints/run_name/seed/config.json`
+        It also saves the config in `checkpoints/group/run_name/seed/config.json`
 
     Args:
         config (dict): 
@@ -695,7 +695,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), "obs_generation/checkpoints", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}", str(config['seed']))
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
@@ -725,7 +725,10 @@ def main(config=None, project="JAXUED_TEST"):
     wandb_config["empty_prob_separate"] = EMPTY_PROB_SEP
     tags = ["obs_gen", "local", "NVL", "key"]
     run = wandb.init(config=wandb_config, project=project, tags=tags, group=config["group"])
-    
+
+    # Match Config Run name and WandB run name
+    config['run_name'] = run.name
+
     wandb.define_metric("num_updates")
     wandb.define_metric("num_env_steps")
     wandb.define_metric("solve_rate/*", step_metric="num_updates")
@@ -1132,8 +1135,8 @@ def main(config=None, project="JAXUED_TEST"):
         metrics['time_delta'] = curr_time - start_time
         log_eval(metrics)
         if config["checkpoint_save_interval"] > 0:
-            checkpoint_manager.save(eval_step, args=ocp.args.StandardSave(runner_state[1]))
-            #checkpoint_manager.wait_until_finished()
+            checkpoint_manager.save(int(metrics['update_count']), args=ocp.args.StandardSave(runner_state[1]))
+            checkpoint_manager.wait_until_finished()
     return runner_state[1]
 
 @hydra.main(config_path="config", config_name="main_obs_gen", version_base=None)

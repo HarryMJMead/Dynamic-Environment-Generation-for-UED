@@ -6,12 +6,16 @@ defaults:
 
 group: PLR
 
+# === CHECKPOINTING ===
+checkpoint_save_interval: 5000
+max_number_of_checkpoints: 10
+
 # === PPO === 
-num_updates: 15000
+num_updates: 30000
 num_env_steps: null
 num_train_envs: 256
-num_steps: 256
-lr: 2.4e-4
+num_steps: 512
+lr: 5e-4
 anneal_lr: True
 max_grad_norm: 0.5
 num_minibatches: 4

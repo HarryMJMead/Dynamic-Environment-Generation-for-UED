@@ -657,7 +657,7 @@ class AdversaryActorCritic(nn.Module):
 # region checkpointing
 def setup_checkpointing(config: dict, train_state: TrainState, env: UnderspecifiedEnv, env_params: EnvParams) -> ocp.CheckpointManager:
     """This takes in the train state and config, and returns an orbax checkpoint manager.
-        It also saves the config in `checkpoints/run_name/seed/config.json`
+        It also saves the config in `checkpoints/group/run_name/seed/config.json`
 
     Args:
         config (dict): 
@@ -668,7 +668,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), "checkpoints", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}", str(config['seed']))
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
