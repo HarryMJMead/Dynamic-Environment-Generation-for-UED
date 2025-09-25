@@ -12,6 +12,7 @@ max_number_of_checkpoints: 5
 eval_freq: 100
 eval_num_attempts: 10
 eval_levels: [
+    "Sokoban_Jr_1_01",
     "Sokoban_Jr_1_02",
     "Sokoban_Jr_1_03",
     "Sokoban_Jr_1_04",
@@ -21,7 +22,16 @@ eval_levels: [
     "Sokoban_Jr_1_08",
     "Sokoban_Jr_1_09",
     "Sokoban_Jr_1_12",
-    "Sokoban_Jr_1_16"
+    "Sokoban_Jr_1_15",
+    "Sokoban_Jr_1_16",
+    "Sokoban_Jr_1_17",
+    "Sokoban_Jr_1_18",
+    "Sokoban_Jr_1_19",
+    "Sokoban_Jr_1_20",
+    "Sokoban_Jr_1_21",
+    "Sokoban_Jr_1_22",
+    "Sokoban_Jr_1_23",
+    "Sokoban_Jr_1_24",
 ]
 
 # === ENV CONFIG ===

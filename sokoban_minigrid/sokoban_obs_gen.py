@@ -559,20 +559,20 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
 NO_KL = False
-BOX_PROB = 0.2
-LAST_BOX_PROB = 0.2
-WALL_PROB = (1 - (3 + LAST_BOX_PROB)*BOX_PROB)/2
+BOX_PROB = 0.3
+LAST_BOX_PROB = 0.03
+WALL_PROB = (1 - (3*BOX_PROB + LAST_BOX_PROB))/2
 
 EMPTY_PROB_SEP = False
-EMPTY_PROB = 0.7 - (2 + LAST_BOX_PROB)*BOX_PROB
+EMPTY_PROB = 0.7 - (3*BOX_PROB + LAST_BOX_PROB)
 class DoubleCategorical(distrax.Distribution):
     def __init__(self, logits_1, logits_2):
         self.pi_1 = distrax.Categorical(logits=logits_1)
         self.pi_2 = distrax.Categorical(logits=logits_2)
 
-        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
+        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB, LAST_BOX_PROB])
         if EMPTY_PROB_SEP:
-            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB, BOX_PROB*0.1])
+            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB, LAST_BOX_PROB])
         self.target_pi = distrax.Categorical(probs=target_probs)
 
     def _sample_n(self, key, n):
@@ -595,6 +595,7 @@ class DoubleCategorical(distrax.Distribution):
     def event_shape(self):
         return (2,)
 
+STUDENT_NETWORK_SIZE = 256
 class ActorCritic(nn.Module):
     action_dim: Sequence[int]
     
@@ -611,16 +612,16 @@ class ActorCritic(nn.Module):
         
         embedding = jnp.concatenate((img_embed, dir_embed, obs.has_key[..., None]), axis=-1)
 
-        hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=256))((embedding, dones), initial_carry=hidden)
+        hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=STUDENT_NETWORK_SIZE))((embedding, dones), initial_carry=hidden)
         embedding = nn.LayerNorm()(embedding)
 
-        actor_mean = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="actor0")(embedding)
+        actor_mean = nn.Dense(STUDENT_NETWORK_SIZE, kernel_init=orthogonal(2), bias_init=constant(0.0), name="actor0")(embedding)
         actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = nn.tanh(actor_mean)
         actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor1")(actor_mean)
         pi = distrax.Categorical(logits=actor_mean)
 
-        critic = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="critic0")(embedding)
+        critic = nn.Dense(STUDENT_NETWORK_SIZE, kernel_init=orthogonal(2), bias_init=constant(0.0), name="critic0")(embedding)
         critic = nn.LayerNorm()(critic)
         critic = nn.tanh(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic1")(critic)
@@ -629,9 +630,9 @@ class ActorCritic(nn.Module):
     
     @staticmethod
     def initialize_carry(batch_dims):
-        return nn.OptimizedLSTMCell(features=256).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, 256))
+        return nn.OptimizedLSTMCell(features=STUDENT_NETWORK_SIZE).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, STUDENT_NETWORK_SIZE))
 
-
+ADV_NETWORK_SIZE = 256
 class AdversaryActorCritic(nn.Module):
     # The adversary's network architecture
     action_dim: Sequence[int]
@@ -655,10 +656,10 @@ class AdversaryActorCritic(nn.Module):
         max_boxes_embedding = nn.Embed(self.max_boxes + 1, 10, name="max_boxes_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.max_boxes, None, self.max_boxes))
         embedding = jnp.concatenate((img_embed, time_value, student_time_value, obs.agent_values, obs.place_goal[..., None], obs.goal_placed, dirs_embedding, box_embedding, box_goal_embedding, max_boxes_embedding), axis=-1)
 
-        hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=256))((embedding, dones), initial_carry=hidden)
+        hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=ADV_NETWORK_SIZE))((embedding, dones), initial_carry=hidden)
         embedding = nn.LayerNorm()(embedding)
 
-        actor_mean = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="actor0")(embedding)
+        actor_mean = nn.Dense(ADV_NETWORK_SIZE, kernel_init=orthogonal(2), bias_init=constant(0.0), name="actor0")(embedding)
         actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = nn.tanh(actor_mean)
         actor_mean_0 = nn.Dense(25, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor10")(actor_mean)
@@ -669,7 +670,7 @@ class AdversaryActorCritic(nn.Module):
         actor_mean_1 = jnp.where(obs.action_mask[1], actor_mean_1, -jnp.inf)
         pi = DoubleCategorical(logits_1=actor_mean_0, logits_2=actor_mean_1)
 
-        critic = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="critic0")(embedding)
+        critic = nn.Dense(ADV_NETWORK_SIZE, kernel_init=orthogonal(2), bias_init=constant(0.0), name="critic0")(embedding)
         critic = nn.LayerNorm()(critic)
         critic = nn.tanh(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic1")(critic)
@@ -678,7 +679,7 @@ class AdversaryActorCritic(nn.Module):
     
     @staticmethod
     def initialize_carry(batch_dims):
-        return nn.OptimizedLSTMCell(features=256).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, 256))
+        return nn.OptimizedLSTMCell(features=ADV_NETWORK_SIZE).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, ADV_NETWORK_SIZE))
 # endregion
 
 # region checkpointing
@@ -723,6 +724,8 @@ def main(config=None, project="JAXUED_TEST"):
     wandb_config["last_box_prob"] = LAST_BOX_PROB
     wandb_config["no_kl"] = NO_KL
     wandb_config["empty_prob_separate"] = EMPTY_PROB_SEP
+    wandb_config["student_network_size"] = STUDENT_NETWORK_SIZE
+    wandb_config["adv_network_size"] = ADV_NETWORK_SIZE
     tags = ["obs_gen", "local", "NVL", "key"]
     run = wandb.init(config=wandb_config, project=project, tags=tags, group=config["group"])
 
@@ -776,19 +779,20 @@ def main(config=None, project="JAXUED_TEST"):
 
         log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
 
-        # generation animations
-        animations = []
-        for i in range(8):
-            frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
-            frames = np.array(frames[:episode_length])
-            animations.append(wandb.Video(frames, fps=4))
-        log_dict.update({f"images/level_animations": animations})
+        if config["log_animations"]:
+            # generation animations
+            animations = []
+            for i in range(8):
+                frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
+                frames = np.array(frames[:episode_length])
+                animations.append(wandb.Video(frames, fps=4))
+            log_dict.update({f"images/level_animations": animations})
 
-        # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+            # animations
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
