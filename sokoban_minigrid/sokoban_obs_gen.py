@@ -227,11 +227,12 @@ def sample_trajectories(
             box_map = next_env_state.env_state.box_map
             next_box_locs = box_map.reshape(num_envs, num_traj, *box_map.shape[1:])
             next_goal_placed = next_env_state.env_state.goal_placed.reshape(num_envs, num_traj)
+            next_has_reset = jnp.logical_or(next_adv_env_state.has_reset, next_carry[3].reshape(num_envs, num_traj).any(axis=1))
 
-            return rng, next_carry, location, not_done, (next_locs, next_dirs, next_box_locs, next_goal_placed, next_value), traj
-        rng, next_pro_carry, pro_location, pro_not_done, (next_locs, next_dirs, next_box_locs, next_goal_placed, next_pro_value), pro_traj = student_step(rng, pro_train_state, pro_carry, num_pro_traj, take_pro_step, pro_not_done)
+            return rng, next_carry, location, not_done, (next_locs, next_dirs, next_box_locs, next_goal_placed, next_has_reset, next_value), traj
+        rng, next_pro_carry, pro_location, pro_not_done, (next_locs, next_dirs, next_box_locs, next_goal_placed, next_has_reset, next_pro_value), pro_traj = student_step(rng, pro_train_state, pro_carry, num_pro_traj, take_pro_step, pro_not_done)
 
-        next_adv_env_state = next_adv_env_state.replace(agent_locs=next_locs, agent_dirs=next_dirs, box_locs=next_box_locs)
+        next_adv_env_state = next_adv_env_state.replace(agent_locs=next_locs, agent_dirs=next_dirs, box_locs=next_box_locs, has_reset=next_has_reset)
         not_done = pro_not_done.reshape(num_envs, num_pro_traj)
         rng, _rng = jax.random.split(rng)
         next_adv_obs = jax.vmap(adv_env.get_finished_obs, in_axes=(0, 0, 0))(jax.random.split(_rng, num_envs), next_adv_env_state, not_done)
@@ -559,7 +560,7 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
 NO_KL = False
-BOX_PROB = 0.3
+BOX_PROB = 0.2
 LAST_BOX_PROB = 0.03
 WALL_PROB = (1 - (3*BOX_PROB + LAST_BOX_PROB))/2
 
@@ -796,8 +797,8 @@ def main(config=None, project="JAXUED_TEST"):
         
         wandb.log(log_dict)
     
-    env = SokobanMaze(max_height=config['max_height'], max_width=config['max_width'], agent_view_size=5, normalize_obs=True)
-    adv_env = LocalSokobanMazeEditorRotateSplitAct(env, random_z_dimensions=config['adv_random_z_dimension'], zero_out_random_z=config['adv_zero_out_random_z'], num_agents=config["num_pro_traj"], agent_view_size=5)
+    env = SokobanMaze(max_height=config['max_height'], max_width=config['max_width'], agent_view_size=5, normalize_obs=True, min_boxes=config['min_boxes'])
+    adv_env = LocalSokobanMazeEditorRotateSplitAct(env, random_z_dimensions=config['adv_random_z_dimension'], zero_out_random_z=config['adv_zero_out_random_z'], num_agents=config["num_pro_traj"], agent_view_size=5, max_boxes=config['max_boxes'])
     eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=5, normalize_obs=True)
     adv_env_renderer = ObservedMazeRenderer(env, tile_size=8, render_boxes=True)
     ani_adv_env_renderer = LocalObservedMazeRenderer(env, tile_size=8, render_boxes=True)

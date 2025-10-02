@@ -40,7 +40,7 @@ student_kl_coeff: 0
 adv_random_z_dimension: 16
 adv_zero_out_random_z: False
 adv_num_steps: 91
-adv_anneal_lr: False
+adv_anneal_lr: True
 adv_lr: 1e-3
 adv_max_grad_norm: 0.5
 adv_num_minibatches: 4
@@ -54,3 +54,4 @@ adv_critic_coeff: 0.5
 # === Generator Hyperparams ===
 box_prob: 0.15
 max_boxes: 10
+min_boxes: 1

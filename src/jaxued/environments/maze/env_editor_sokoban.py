@@ -34,7 +34,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
     def num_actions(self) -> int:
         return self.num_agents * self.agent_view_size**2 * TOTAL_OBJECT_TYPES
     
-    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, include_agent=True):
+    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, has_reset: chex.Array, include_agent=True):
         dir_vec = DIR_TO_VEC[agent_dir]
         
         obs_fwd_bound1 = agent_pos
@@ -84,8 +84,8 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1] + self.agent_view_size-1, state.level.agent_pos[0] + self.agent_view_size-1].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )
-        image, obs_map, box_map, action_mask = jax.vmap(self.get_agent_obs, in_axes=(0, 0, 0, None, None))(state.agent_locs, state.agent_dirs, state.box_locs, state.level, maze_map_with_agent)
-        finished_obs, _, _, _ = self.get_agent_obs(state.level.goal_pos - jnp.array([2, 0]), jnp.array(0), state.level.box_map, state.level, maze_map_with_agent, False)
+        image, obs_map, box_map, action_mask = jax.vmap(self.get_agent_obs, in_axes=(0, 0, 0, None, None, None))(state.agent_locs, state.agent_dirs, state.box_locs, state.level, maze_map_with_agent, state.has_reset)
+        finished_obs, _, _, _ = self.get_agent_obs(state.level.goal_pos - jnp.array([2, 0]), jnp.array(0), state.level.box_map, state.level, maze_map_with_agent, state.has_reset, False)
         finished_image = finished_obs[None, ...].repeat(self.num_agents, axis=0)
         image = jnp.where(not_done.reshape(-1, 1, 1, 1), image, finished_image)
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
@@ -127,7 +127,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         maze_map_with_agent = maze_map.at[state.level.agent_pos[1] + self.agent_view_size-1, state.level.agent_pos[0] + self.agent_view_size-1].set(
             jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red'], state.level.agent_dir], dtype=jnp.uint8)
         )
-        image, obs_map, box_map, action_mask = jax.vmap(self.get_agent_obs, in_axes=(0, 0, 0, None, None))(state.agent_locs, state.agent_dirs, state.box_locs, state.level, maze_map_with_agent)
+        image, obs_map, box_map, action_mask = jax.vmap(self.get_agent_obs, in_axes=(0, 0, 0, None, None, None))(state.agent_locs, state.agent_dirs, state.box_locs, state.level, maze_map_with_agent, state.has_reset)
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
         obs_map = jnp.moveaxis(obs_map, 0, -1)
         box_map = jnp.moveaxis(box_map, 0, -1)
@@ -297,14 +297,14 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         return state.replace(level=level)
 
 class LocalSokobanMazeEditorRotate(LocalSokobanMazeEditor):
-    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, include_agent=True):
+    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, has_reset: chex.Array, include_agent=True):
         def rotate(arr):
             return (agent_dir == 0)*jnp.rot90(arr, 1) + \
                    (agent_dir == 1)*jnp.rot90(arr, 2) + \
                    (agent_dir == 2)*jnp.rot90(arr, 3) + \
                    (agent_dir == 3)*jnp.rot90(arr, 4)
         
-        obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, include_agent)    
+        obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, has_reset, include_agent)    
         obs, obs_map, box_map = jax.tree_map(rotate, (obs, obs_map, box_map))
         total_boxes = level.box_map.sum()
         total_box_goals = level.box_goal_map.sum()
@@ -350,11 +350,11 @@ class LocalSokobanMazeEditorRotateSplitAct(LocalSokobanMazeEditorRotate):
     def num_actions(self) -> int:
         return (self.num_agents * self.agent_view_size**2, TOTAL_OBJECT_TYPES)
     
-    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, include_agent=True):
+    def get_agent_obs(self, agent_pos: chex.Array, agent_dir: chex.Array, box_map: chex.Array, level: ObservedLevel, maze_map: chex.Array, has_reset, include_agent=True):
         level_incomplete = jnp.logical_xor(box_map, level.box_goal_map)
         level_incomplete = level_incomplete.any()
 
-        obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, include_agent)    
+        obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, has_reset, include_agent)    
         action_mask_loc = ~obs_map.flatten()
         total_boxes = level.box_map.sum()
         total_box_goals = level.box_goal_map.sum()

@@ -43,6 +43,7 @@ class EnvState:
     agent_locs: chex.Array = None
     agent_dirs: chex.Array = None
     box_locs: chex.Array = None
+    has_reset: bool = False
 
 @struct.dataclass
 class Observation:
@@ -168,7 +169,8 @@ class MazeEditor(UnderspecifiedEnv):
             terminal=False,
             agent_locs=jnp.tile(level.agent_pos, (self.num_agents, 1)),
             agent_dirs=jnp.tile(level.agent_dir, (self.num_agents)),
-            box_locs=jnp.tile(level.box_map, (self.num_agents, 1, 1))
+            box_locs=jnp.tile(level.box_map, (self.num_agents, 1, 1)),
+            has_reset=False,
         )
         
     def _edit_level(self, rng: chex.PRNGKey, state: EnvState, edit_idx: int, params: EnvParams) -> Tuple[EnvState, float]:

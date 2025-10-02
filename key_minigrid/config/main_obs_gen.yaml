@@ -44,7 +44,7 @@ adv_anneal_lr: True
 adv_lr: 1e-3
 adv_max_grad_norm: 0.5
 adv_num_minibatches: 4
-adv_gamma: 0.99
+adv_gamma: 0.998
 adv_epoch_ppo: 4
 adv_clip_eps: 0.2
 adv_gae_lambda: 0.95

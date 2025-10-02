@@ -69,6 +69,7 @@ class SokobanMaze(Maze):
         fully_obs = False,
         penalize_time = True,
         key_reward = 0.0,
+        min_boxes = 1,
     ):
         super().__init__(
             max_height=max_height,
@@ -81,6 +82,7 @@ class SokobanMaze(Maze):
             key_reward=key_reward,
         )
         self.show_boxes = True
+        self.min_boxes = min_boxes
 
     def action_space(self, params: EnvParams) -> spaces.Discrete:
         """Action space of the environment."""
@@ -165,7 +167,7 @@ class SokobanMaze(Maze):
 
         boxes_remaining = jnp.logical_xor(box_map, state.box_goal_map).any()
         boxes_finished = jnp.logical_and(box_map, state.box_goal_map).sum()
-        box_complete = jnp.logical_and(boxes_remaining == 0, boxes_finished >= jnp.maximum(state.max_boxes, 1))
+        box_complete = jnp.logical_and(boxes_remaining == 0, boxes_finished >= jnp.maximum(state.max_boxes, self.min_boxes))
         
         level_finished = jnp.logical_or(box_complete, fwd_pos_has_goal)
 
