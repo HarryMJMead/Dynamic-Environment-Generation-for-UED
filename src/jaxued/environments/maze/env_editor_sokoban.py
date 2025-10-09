@@ -16,7 +16,7 @@ DIR_TO_VEC = jnp.array([
     (0, -1), # up
 ], dtype=jnp.int8)
 
-TOTAL_OBJECT_TYPES = 6
+TOTAL_OBJECT_TYPES = 5
 class LocalSokobanMazeEditor(LocalMazeEditor):
     def __init__(self, env: Maze, random_z_dimensions: int = 16, zero_out_random_z: bool = False, num_agents = 2, agent_view_size = 5, set_start = False, set_init_pos = True, max_boxes = 10):
         super().__init__(
@@ -277,14 +277,14 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
             agent_dirs=jnp.tile(level.agent_dir, (self.num_agents))
             return state.replace(agent_locs=agent_locs, agent_dirs=agent_dirs)
         
-        edit_goal = jnp.clip(edit_type_idx-1, 0, 4)
+        edit_goal = jnp.clip(edit_type_idx-1, 0, 3)
         edit_time = state.time.clip(None, 3)
         if self.set_start:
             level = jax.lax.switch(edit_time, [
                 rotate_agent,
                 move_agent_x,
                 move_agent_y,
-                lambda: jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, toggle_filled_box_goal, increase_max_boxes])
+                lambda: jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, toggle_filled_box_goal])
             ])
 
             state = jax.tree_map(
@@ -293,7 +293,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
                 state
             )
         else:
-            level = jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, toggle_filled_box_goal, increase_max_boxes])
+            level = jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, toggle_filled_box_goal])
         return state.replace(level=level)
 
 class LocalSokobanMazeEditorRotate(LocalSokobanMazeEditor):
@@ -359,10 +359,13 @@ class LocalSokobanMazeEditorRotateSplitAct(LocalSokobanMazeEditorRotate):
         total_boxes = level.box_map.sum()
         total_box_goals = level.box_goal_map.sum()
 
-        can_set_max = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < level.max_boxes)
-        can_add_filled_box_goal = jnp.logical_and(jnp.logical_and(total_boxes < level.max_boxes, total_box_goals < level.max_boxes), jnp.minimum(total_boxes, total_box_goals) < level.max_boxes - 1)
+        # can_set_max = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < level.max_boxes)
+        # can_add_filled_box_goal = jnp.logical_and(jnp.logical_and(total_boxes < level.max_boxes, total_box_goals < level.max_boxes), jnp.minimum(total_boxes, total_box_goals) < level.max_boxes - 1)
 
-        action_mask_type = jnp.array([True, True, total_boxes < level.max_boxes, total_box_goals < level.max_boxes, can_add_filled_box_goal, level.max_boxes < self.max_boxes], dtype=jnp.bool_)
+        can_add_filled_box_goal = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < self.max_boxes)
+
+        #action_mask_type = jnp.array([True, True, jnp.logical_and(total_boxes < self.max_boxes, ~has_reset), jnp.logical_and(total_box_goals < self.max_boxes, ~has_reset), can_add_filled_box_goal], dtype=jnp.bool_)
+        action_mask_type = jnp.array([True, True, total_boxes < self.max_boxes, total_box_goals < self.max_boxes, can_add_filled_box_goal], dtype=jnp.bool_)
         return obs, obs_map, box_map, (action_mask_loc, action_mask_type)
     
     def _edit_level(self, rng, state, edit_idxs, params):
