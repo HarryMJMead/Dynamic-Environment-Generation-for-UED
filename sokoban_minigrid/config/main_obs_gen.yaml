@@ -55,3 +55,4 @@ adv_critic_coeff: 0.5
 box_prob: 0.15
 max_boxes: 10
 min_boxes: 1
+init_entropy_coeff: 0.5

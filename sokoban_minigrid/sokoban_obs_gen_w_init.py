@@ -36,6 +36,7 @@ class TrainState:
     update_count: int
     pro_train_state: BaseTrainState
     adv_train_state: BaseTrainState
+    init_train_state: BaseTrainState
 
 def compute_gae(
     gamma: float,
@@ -525,6 +526,81 @@ def update_actor_critic_rnn(
 
     return jax.lax.scan(update_epoch, (rng, train_state), None, n_epochs)
 
+def update_init_actor_critic(
+    rng: chex.PRNGKey,
+    train_state: TrainState,
+    batch: chex.ArrayTree,
+    num_envs: int,
+    n_minibatch: int,
+    n_epochs: int,
+    clip_eps: float,
+    entropy_coeff: float,
+    critic_coeff: float,
+    update_grad: bool=True,
+) -> Tuple[Tuple[chex.PRNGKey, TrainState], chex.ArrayTree]:
+    """This function takes in a rollout, and PPO hyperparameters, and updates the train state.
+
+    Args:
+        rng (chex.PRNGKey): 
+        train_state (TrainState): 
+        init_hstate (chex.ArrayTree): 
+        batch (chex.ArrayTree): obs, actions, dones, log_probs, values, targets, advantages
+        num_envs (int): 
+        n_steps (int): 
+        n_minibatch (int): 
+        n_epochs (int): 
+        clip_eps (float): 
+        entropy_coeff (float): 
+        critic_coeff (float): 
+        update_grad (bool, optional): If False, the train state does not actually get updated. Defaults to True.
+
+    Returns:
+        Tuple[Tuple[chex.PRNGKey, TrainState], chex.ArrayTree]: It returns a new rng, the updated train_state, and the losses. The losses have structure (loss, (l_vf, l_clip, entropy))
+    """
+    actions, log_probs, values, targets, advantages = batch
+    batch = actions, log_probs, values, targets, advantages
+    
+    def update_epoch(carry, _):
+        def update_minibatch(train_state, minibatch):
+            actions, log_probs, values, targets, advantages = minibatch
+            
+            def loss_fn(params):
+                pi, values_pred = train_state.apply_fn(params)
+                log_probs_pred = pi.log_prob(actions)
+                entropy = pi.entropy().mean()
+
+                ratio = jnp.exp(log_probs_pred - log_probs)
+                A = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+                l_clip = (-jnp.minimum(ratio * A, jnp.clip(ratio, 1 - clip_eps, 1 + clip_eps) * A)).mean()
+
+                values_pred_clipped = values + (values_pred - values).clip(-clip_eps, clip_eps)
+                l_vf = 0.5 * jnp.maximum((values_pred - targets) ** 2, (values_pred_clipped - targets) ** 2).mean()
+
+                loss = l_clip + critic_coeff * l_vf - entropy_coeff * entropy
+
+                return loss, (l_vf, l_clip, entropy)
+
+            grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+            loss, grads = grad_fn(train_state.params)
+            if update_grad:
+                train_state = train_state.apply_gradients(grads=grads)
+            return train_state, loss
+
+        rng, train_state = carry
+        rng, rng_perm = jax.random.split(rng)
+        permutation = jax.random.permutation(rng_perm, num_envs)
+        minibatches = jax.tree_map(
+            lambda x: jnp.take(x, permutation, axis=1)
+            .reshape(x.shape[0], n_minibatch, -1, *x.shape[2:])
+            .swapaxes(0, 1),
+            batch,
+        )
+        
+        train_state, losses = jax.lax.scan(update_minibatch, train_state, minibatches)
+        return (rng, train_state), losses
+
+    return jax.lax.scan(update_epoch, (rng, train_state), None, n_epochs)
+
 def compute_min_steps_to_goal(level, with_boxes=False):
     #wall_values = jnp.repeat(jnp.where(level.wall_map, jnp.inf, -jnp.inf)[None, ...], 4, axis=0) # unseen squares treated as empty
     wall_cells = jnp.logical_or(level.wall_map, ~level.observation_map)
@@ -559,21 +635,32 @@ def compute_min_steps_to_goal(level, with_boxes=False):
     values = jax.lax.select(level.goal_placed, values.at[:, level.goal_pos[1], level.goal_pos[0]].set(0), values)
     return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
 
+class LevelInit(nn.Module):
+    n_classes: int
+
+    @nn.compact
+    def __call__(self):
+        # logits: shape (n_classes,)
+        logits = self.param('logits', lambda rng, shape: jnp.zeros(shape), (self.n_classes,))
+        pi = distrax.Categorical(logits=logits)
+        value = self.param('value', lambda rng, shape: jnp.zeros(shape), ())
+        return pi, value
+
 NO_KL = False
-BOX_PROB = 0.02
+BOX_PROB = 0.1
 LAST_BOX_PROB = 0.03
-WALL_PROB = (1 - (3*BOX_PROB + LAST_BOX_PROB))/2
+WALL_PROB = (1 - (2*BOX_PROB + LAST_BOX_PROB))/2
 
 EMPTY_PROB_SEP = False
-EMPTY_PROB = 0.7 - (3*BOX_PROB + LAST_BOX_PROB)
+EMPTY_PROB = 0.7 - (2*BOX_PROB + LAST_BOX_PROB)
 class DoubleCategorical(distrax.Distribution):
     def __init__(self, logits_1, logits_2):
         self.pi_1 = distrax.Categorical(logits=logits_1)
         self.pi_2 = distrax.Categorical(logits=logits_2)
 
-        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB, BOX_PROB])
+        target_probs = jnp.array([WALL_PROB, WALL_PROB, BOX_PROB, BOX_PROB])
         if EMPTY_PROB_SEP:
-            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB, BOX_PROB])
+            target_probs = jnp.array([EMPTY_PROB, 0.3, BOX_PROB, BOX_PROB])
         self.target_pi = distrax.Categorical(probs=target_probs)
 
     def _sample_n(self, key, n):
@@ -664,7 +751,7 @@ class AdversaryActorCritic(nn.Module):
         actor_mean = nn.LayerNorm()(actor_mean)
         actor_mean = nn.tanh(actor_mean)
         actor_mean_0 = nn.Dense(25, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor10")(actor_mean)
-        actor_mean_1 = nn.Dense(5, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
+        actor_mean_1 = nn.Dense(4, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor11")(actor_mean)
 
         # Mask out this
         actor_mean_0 = jnp.where(obs.action_mask[0], actor_mean_0, -jnp.inf)
@@ -760,6 +847,7 @@ def main(config=None, project="JAXUED_TEST"):
             "misc/pro_extra_num_episodes": stats['pro_extra_eps'].mean(),
             "misc/unsolvable_approx":   stats['unsolvable_approx'].mean(),
             "misc/mean_num_boxes": stats['num_boxes'].mean(),
+            "misc/mean_max_boxes": stats['max_boxes'].mean(),
         }
         
         # evaluation performance
@@ -773,7 +861,7 @@ def main(config=None, project="JAXUED_TEST"):
         def make_caption(i):
             pro_mean_returns = jnp.round(stats['pro_returns'][-1][i], 2) # .flatten()
             pro_extra_mean_returns = jnp.round(stats['pro_extra_mean_returns'][-1][i], 2) # .flatten()
-            num_boxes = stats['num_boxes'][-1][i]
+            num_boxes = stats['max_boxes'][-1][i]
             unsolvable_approx = stats['unsolvable_approx'][-1][i]
             adv_return = jnp.round(stats['adv_returns'][-1][i], 2) # .flatten()
             return f"P({pro_mean_returns:.2f}, {pro_extra_mean_returns:.2f})Adv({adv_return:.2f})|B({num_boxes})|U({unsolvable_approx})"
@@ -858,14 +946,18 @@ def main(config=None, project="JAXUED_TEST"):
                     / config["num_updates"]
                 )
                 return config[f"{prefix}lr"] * frac
-            obs, _ = env.reset_to_level(rng, sample_empty_level(), env_params)
-            obs = jax.tree_map(
-                lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
-                obs,
-            )
-            init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
-            network = network_cls(env.action_space(env_params).n, **network_kws)
-            network_params = network.init(rng, init_x, network_cls.initialize_carry((config["num_train_envs"],)))
+            if env != None:
+                obs, _ = env.reset_to_level(rng, sample_empty_level(), env_params)
+                obs = jax.tree_map(
+                    lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
+                    obs,
+                )
+                init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
+                network = network_cls(env.action_space(env_params).n, **network_kws)
+                network_params = network.init(rng, init_x, network_cls.initialize_carry((config["num_train_envs"],)))
+            else:
+                network = network_cls(**network_kws)
+                network_params = network.init(rng)
             learning_rate = linear_schedule if config[f"{prefix}anneal_lr"] else config[f"{prefix}lr"]
             tx = optax.chain(
                 optax.clip_by_global_norm(config[f"{prefix}max_grad_norm"]),
@@ -878,11 +970,12 @@ def main(config=None, project="JAXUED_TEST"):
                 params=network_params,
                 tx=tx,
             )
-        rng_pro, rng_adv = jax.random.split(rng)
+        rng_pro, rng_adv, rng_init = jax.random.split(rng, 3)
         return TrainState(
             update_count = 0,
             pro_train_state = create_inner_train_state(rng_pro, env, env_params, ActorCritic, "student_"),
             adv_train_state = create_inner_train_state(rng_adv, adv_env, adv_env_params, AdversaryActorCritic, "adv_", network_kws={"max_timesteps": config["adv_num_steps"], "student_max_timesteps": config["max_steps_in_episode"], "max_boxes": config["max_boxes"]}),
+            init_train_state = create_inner_train_state(rng_init, None, None, LevelInit, "adv_", network_kws={"n_classes": config['max_boxes']}),
         )
 
     def train_step(carry, _):
@@ -912,18 +1005,20 @@ def main(config=None, project="JAXUED_TEST"):
                 update_grad=True,
             )
         
-        def check_agent_path_box(env_state, agent_locations):
-            level = env_state.level
-            distances_to_goal = compute_min_steps_to_goal(level, with_boxes=False)
-            distances_to_goal_box = compute_min_steps_to_goal(level, with_boxes=True)
-
-            return jnp.logical_and(distances_to_goal[level.agent_dir, level.agent_pos[1], level.agent_pos[0]] < jnp.inf, distances_to_goal_box[level.agent_dir, level.agent_pos[1], level.agent_pos[0]] == jnp.inf)
+        def init_levels(rng, train_state):
+            rng_actions, rng_init = jax.random.split(rng)
+            pi, value = train_state.apply_fn(train_state.params)
+            actions = pi.sample(seed=rng_actions, sample_shape=(config["num_train_envs"],))
+            log_probs = pi.log_prob(actions)
+            values = jnp.ones_like(log_probs)*value
+            empty_levels = jax.vmap(sample_random_init_level)(jax.random.split(rng_init, config["num_train_envs"]))
+            return empty_levels.replace(max_boxes=actions+1), (actions, log_probs, values)
 
         rng, train_state = carry
         
         # Initialise Levels
         rng, _rng = jax.random.split(rng)
-        empty_levels = jax.vmap(sample_random_init_level)(jax.random.split(_rng, config["num_train_envs"]))
+        empty_levels, (init_actions, init_log_probs, init_values) = init_levels(_rng, train_state.init_train_state)
 
         # Gather Trajectories
         (rng, (pro_carry, adv_carry), (pro_traj, adv_traj), (pro_last_value, adv_last_value), pro_locations, student_adv_idxs, student_adv_env_states) = sample_trajectories(
@@ -1021,6 +1116,22 @@ def main(config=None, project="JAXUED_TEST"):
         (rng, pro_train_state), pro_losses = update(rng, train_state.pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"]*config["num_pro_traj"],)), pro_rollout, "student_", num_envs=config["num_train_envs"]*config["num_pro_traj"])
         (rng, adv_train_state), adv_losses = update(rng, train_state.adv_train_state, AdversaryActorCritic.initialize_carry((config["num_train_envs"],)), adv_rollout, "adv_", num_envs=config["num_train_envs"])
 
+        adv_returns = rewards.sum(axis=0)
+        init_rollout = (init_actions, init_log_probs, init_values, adv_returns, adv_returns - init_values)
+        init_rollout = jax.tree_map(lambda x: x[None, ...], init_rollout)
+        (rng, init_train_state), init_losses = update_init_actor_critic(
+            rng,
+            train_state.init_train_state,
+            init_rollout,
+            config["num_train_envs"],
+            config[f"adv_num_minibatches"],
+            config[f"adv_epoch_ppo"],
+            config[f"adv_clip_eps"],
+            config[f"init_entropy_coeff"],
+            config[f"adv_critic_coeff"],
+            update_grad=True,
+        )
+
         adv_last_env_state = adv_carry[2]
         levels = adv_last_env_state.level
 
@@ -1031,7 +1142,7 @@ def main(config=None, project="JAXUED_TEST"):
             "adv_losses": jax.tree_map(lambda x: x.mean(), adv_losses),
             "mean_num_blocks": levels.wall_map.sum() / config["num_train_envs"],
             "pro_returns": pro_mean_returns,
-            "adv_returns":   rewards.sum(axis=0),
+            "adv_returns": adv_returns,
             "pro_eps": pro_eps,
             "levels": levels,
             "animated_levels": (student_adv_env_states, episode_lengths),
@@ -1040,12 +1151,14 @@ def main(config=None, project="JAXUED_TEST"):
             "pro_extra_eps": pro_extra_eps,
             "unsolvable_approx": agent_failed,
             "num_boxes": levels.box_map.sum(axis=(1,2)),
+            "max_boxes": levels.max_boxes,
         }
 
         train_state = train_state.replace(
             update_count=train_state.update_count + 1,
             pro_train_state=pro_train_state,
             adv_train_state=adv_train_state,
+            init_train_state=init_train_state,
         )
         return (rng, train_state), metrics
     

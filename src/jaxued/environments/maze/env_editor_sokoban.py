@@ -362,10 +362,10 @@ class LocalSokobanMazeEditorRotateSplitAct(LocalSokobanMazeEditorRotate):
         # can_set_max = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < level.max_boxes)
         # can_add_filled_box_goal = jnp.logical_and(jnp.logical_and(total_boxes < level.max_boxes, total_box_goals < level.max_boxes), jnp.minimum(total_boxes, total_box_goals) < level.max_boxes - 1)
 
-        can_add_filled_box_goal = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < self.max_boxes)
+        can_add_filled_box_goal = jnp.logical_and(level_incomplete, jnp.maximum(total_boxes, total_box_goals) < level.max_boxes)
 
         #action_mask_type = jnp.array([True, True, jnp.logical_and(total_boxes < self.max_boxes, ~has_reset), jnp.logical_and(total_box_goals < self.max_boxes, ~has_reset), can_add_filled_box_goal], dtype=jnp.bool_)
-        action_mask_type = jnp.array([True, True, total_boxes < self.max_boxes, total_box_goals < self.max_boxes, can_add_filled_box_goal], dtype=jnp.bool_)
+        action_mask_type = jnp.array([True, True, total_boxes < level.max_boxes, total_box_goals < level.max_boxes], dtype=jnp.bool_)
         return obs, obs_map, box_map, (action_mask_loc, action_mask_type)
     
     def _edit_level(self, rng, state, edit_idxs, params):
