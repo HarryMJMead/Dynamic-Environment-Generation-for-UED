@@ -6,7 +6,7 @@ defaults:
 "SEED": 2
 "GROUP_NAME": "SFL"
 "ENTITY": ""
-"PROJECT": "sokoban_minigrid_UED_Testing"
+"PROJECT": "sokoban_minigrid_UED_Checkpoint"
 "WANDB_MODE" : "online"
 "SAVE_PATH": "SFL/checkpoints/new_minigrid"
 
@@ -14,8 +14,8 @@ learning:
   "NUM_ENVS_FROM_SAMPLED": 128
   "NUM_ENVS_TO_GENERATE": 128
 
-max_height: 13
-max_width: 13
+max_height: 9
+max_width: 9
 
 # SAMPLE LEARNABILITY 
 "BATCH_SIZE": 5000

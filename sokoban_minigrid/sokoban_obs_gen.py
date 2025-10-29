@@ -561,7 +561,7 @@ def compute_min_steps_to_goal(level, with_boxes=False):
 
 NO_KL = False
 BOX_PROB = 0.2
-LAST_BOX_PROB = 0.03
+LAST_BOX_PROB = 0.06
 WALL_PROB = (1 - (3*BOX_PROB + LAST_BOX_PROB))/2
 
 EMPTY_PROB_SEP = False

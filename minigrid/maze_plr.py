@@ -606,10 +606,12 @@ def main(config=None, project="JAXUED_TEST"):
         init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
         network = ActorCritic(env.action_space(env_params).n)
         network_params = network.init(rng, init_x, ActorCritic.initialize_carry((config["num_train_envs"],)))
+        learning_rate = linear_schedule if config["anneal_lr"] else config["lr"]
         tx = optax.chain(
             optax.clip_by_global_norm(config["max_grad_norm"]),
-            optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            # optax.adam(learning_rate=config["lr"], eps=1e-5),
+            #optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            #optax.adam(learning_rate=config["lr"], eps=1e-5),
+            optax.adam(learning_rate=learning_rate, eps=1e-5),
         )
         pholder_level = sample_random_level(jax.random.PRNGKey(0))
         sampler = level_sampler.initialize(pholder_level, {"max_return": -jnp.inf, "unsolvable": True})

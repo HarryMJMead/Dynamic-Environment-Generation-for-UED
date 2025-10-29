@@ -16,7 +16,7 @@ import wandb
 from jaxued.environments.underspecified_env import EnvParams, EnvState, Observation, UnderspecifiedEnv
 from jaxued.linen import ResetRNN
 from jaxued.environments import SokobanMaze, MazeRenderer
-from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator, make_level_mutator_minimax
+from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator, make_level_mutator_minimax_sokoban
 from jaxued.level_sampler import LevelSampler
 from jaxued.utils import compute_max_mean_returns_epcount, max_mc, positive_value_loss, negative_value_loss, negative_value_loss_solved, negative_value_loss_solved_sum
 from jaxued.wrappers import AutoReplayWrapper
@@ -596,7 +596,7 @@ def main(config=None, project="JAXUED_TEST"):
     eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
     env = AutoReplayWrapper(env)
     env_params = env.default_params
-    mutate_level = make_level_mutator_minimax(100)
+    mutate_level = make_level_mutator_minimax_sokoban(100)
 
     # And the level sampler    
     level_sampler = LevelSampler(

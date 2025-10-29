@@ -409,10 +409,11 @@ def main(config=None, project="JAXUED_TEST"):
         })
 
         # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+        if config["log_animations"]:
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
@@ -443,10 +444,12 @@ def main(config=None, project="JAXUED_TEST"):
         network = ActorCritic(env.action_space(env_params).n)
         rng, _rng = jax.random.split(rng)
         network_params = network.init(_rng, init_x, ActorCritic.initialize_carry((config["num_train_envs"],)))
+        learning_rate = linear_schedule if config["anneal_lr"] else config["lr"]
         tx = optax.chain(
             optax.clip_by_global_norm(config["max_grad_norm"]),
-            optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            # optax.adam(learning_rate=config["lr"], eps=1e-5),
+            #optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            #optax.adam(learning_rate=config["lr"], eps=1e-5),
+            optax.adam(learning_rate=learning_rate, eps=1e-5),
         )
     
         rng_levels, rng_reset = jax.random.split(rng)

@@ -6,7 +6,7 @@ defaults:
 "SEED": 2
 "GROUP_NAME": "SFL"
 "ENTITY": ""
-"PROJECT": "minigrid_UED"
+"PROJECT": "minigrid_UED_Checkpoint"
 "WANDB_MODE" : "online"
 "SAVE_PATH": "SFL/checkpoints/new_minigrid"
 

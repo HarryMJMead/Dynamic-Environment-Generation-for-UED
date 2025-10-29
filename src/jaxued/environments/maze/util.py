@@ -328,8 +328,8 @@ def make_level_mutator_minimax_key(max_num_edits: int) -> Callable[[chex.PRNGKey
         key_idx = w*state.key_pos[1] + state.key_pos[0]
         wall_mask = wall_mask.at[goal_idx].set(True)
         wall_mask = wall_mask.at[agent_idx].set(True)
-        wall_map = wall_mask.at[door_idx].set(True)
-        wall_map = wall_mask.at[key_idx].set(True)
+        wall_mask = wall_mask.at[door_idx].set(True)
+        wall_mask = wall_mask.at[key_idx].set(True)
 
         next_goal_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
         next_goal_y = next_goal_idx//w
@@ -352,7 +352,7 @@ def make_level_mutator_minimax_key(max_num_edits: int) -> Callable[[chex.PRNGKey
         wall_mask = wall_mask.at[goal_idx].set(True)
         wall_mask = wall_mask.at[agent_idx].set(True)
         wall_mask = wall_mask.at[door_idx].set(True)
-        wall_map = wall_mask.at[key_idx].set(True)
+        wall_mask = wall_mask.at[key_idx].set(True)
 
         next_key_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
         next_key_y = next_key_idx//w
@@ -375,7 +375,7 @@ def make_level_mutator_minimax_key(max_num_edits: int) -> Callable[[chex.PRNGKey
         wall_mask = wall_mask.at[goal_idx].set(True)
         wall_mask = wall_mask.at[agent_idx].set(True)
         wall_mask = wall_mask.at[key_idx].set(True)
-        wall_map = wall_mask.at[door_idx].set(True)
+        wall_mask = wall_mask.at[door_idx].set(True)
 
         next_door_idx = jax.random.choice(rng, np.arange(h*w), p=~wall_mask)
         next_door_y = next_door_idx//w
@@ -400,6 +400,127 @@ def make_level_mutator_minimax_key(max_num_edits: int) -> Callable[[chex.PRNGKey
 
                 is_move_goal = jnp.equal(mutation, Mutations.MOVE_GOAL.value)
                 mutated_state = move_goal(brng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_goal, x, y), mutated_state, next_state)
+
+                is_move_key = jnp.equal(mutation, Mutations.MOVE_KEY.value)
+                mutated_state = move_key(brng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_key, x, y), mutated_state, next_state)
+
+                is_move_door = jnp.equal(mutation, Mutations.MOVE_DOOR.value)
+                mutated_state = move_door(brng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_door, x, y), mutated_state, next_state)
+                
+                return next_state
+                
+            return jax.lax.cond(mutation != -1, _apply, lambda *_: state, rng, state), None
+
+        rng, nrng, *mrngs = jax.random.split(rng, max_num_edits+2)
+        mutations = jax.random.choice(nrng, np.arange(len(Mutations)), (max_num_edits,))
+        mutations = jnp.where(jnp.arange(max_num_edits) < n, mutations, -1) # mask out extra mutations
+
+        new_level, _ = jax.lax.scan(_mutate, level, (jnp.array(mrngs), mutations))
+
+        return new_level
+    
+    return move_goal_flip_walls
+
+def make_level_mutator_minimax_sokoban(max_num_edits: int) -> Callable[[chex.PRNGKey, Level, int], Level]:
+    class Mutations(IntEnum):
+        # Turn left, turn right, move forward
+        NO_OP = 0
+        FLIP_WALL = 1
+        ADD_BOX = 2
+        REMOVE_BOX = 3
+    
+    def flip_wall(rng, state):
+        wall_map = state.wall_map
+        box_map = state.box_map
+        box_goal_map = state.box_goal_map
+        h,w = wall_map.shape
+        wall_mask = jnp.ones((h*w,), dtype=jnp.bool_)
+
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        wall_mask = wall_mask.at[agent_idx].set(False)
+        wall_mask = jnp.logical_and(wall_mask, ~box_map.flatten())
+        wall_mask = jnp.logical_and(wall_mask, ~box_goal_map.flatten())
+
+        flip_idx = jax.random.choice(rng, np.arange(h*w), p=wall_mask)
+        flip_y = flip_idx//w
+        flip_x = flip_idx%w
+
+        flip_val = ~wall_map.at[flip_y,flip_x].get()
+        next_wall_map = wall_map.at[flip_y,flip_x].set(flip_val)
+
+        return state.replace(wall_map=next_wall_map)
+    
+    def add_box(rng, state):
+        wall_map = state.wall_map
+        box_map = state.box_map
+        box_goal_map = state.box_goal_map
+        h,w = wall_map.shape
+        wall_mask = wall_map.flatten()
+
+        agent_idx = w*state.agent_pos[1] + state.agent_pos[0]
+        wall_mask = wall_mask.at[agent_idx].set(True)
+
+        box_mask = jnp.logical_or(wall_mask, box_map.flatten())
+        box_goal_mask = jnp.logical_or(wall_mask, box_goal_map.flatten())
+
+        rng_box, rng_box_goal = jax.random.split(rng)
+        box_idx = jax.random.choice(rng_box, np.arange(h*w), p=~box_mask)
+        box_y = box_idx//w
+        box_x = box_idx%w
+
+        box_goal_idx = jax.random.choice(rng_box_goal, np.arange(h*w), p=~box_goal_mask)
+        box_goal_y = box_goal_idx//w
+        box_goal_x = box_goal_idx%w
+
+        next_box_map = box_map.at[box_y,box_x].set(True)
+        next_box_goal_map = box_goal_map.at[box_goal_y,box_goal_x].set(True)
+
+        return state.replace(box_map=next_box_map, box_goal_map=next_box_goal_map)
+    
+    def remove_box(rng, state):
+        wall_map = state.wall_map
+        box_map = state.box_map
+        box_goal_map = state.box_goal_map
+        h,w = wall_map.shape
+
+        box_mask = box_map.flatten()
+        box_goal_mask = box_goal_map.flatten()
+
+        rng_box, rng_box_goal = jax.random.split(rng)
+        box_idx = jax.random.choice(rng_box, np.arange(h*w), p=box_mask)
+        box_y = box_idx//w
+        box_x = box_idx%w
+
+        box_goal_idx = jax.random.choice(rng_box_goal, np.arange(h*w), p=box_goal_mask)
+        box_goal_y = box_goal_idx//w
+        box_goal_x = box_goal_idx%w
+
+        next_box_map = box_map.at[box_y,box_x].set(False)
+        next_box_goal_map = box_goal_map.at[box_goal_y,box_goal_x].set(False)
+
+        return state.replace(box_map=next_box_map, box_goal_map=next_box_goal_map)
+
+    def move_goal_flip_walls(rng, level, n=1):
+        def _mutate(carry, step):
+            state = carry
+            rng, mutation = step
+
+            def _apply(rng, state):    
+                rng, arng, brng = jax.random.split(rng, 3)
+
+                is_flip_wall = jnp.equal(mutation, Mutations.FLIP_WALL.value)
+                mutated_state = flip_wall(arng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_flip_wall, x, y), mutated_state, state)
+
+                is_move_goal = jnp.equal(mutation, Mutations.ADD_BOX.value)
+                mutated_state = add_box(brng, state)
+                next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_goal, x, y), mutated_state, next_state)
+
+                is_move_goal = jnp.equal(mutation, Mutations.REMOVE_BOX.value)
+                mutated_state = remove_box(brng, state)
                 next_state = jax.tree_map(lambda x,y: jax.lax.select(is_move_goal, x, y), mutated_state, next_state)
                 
                 return next_state

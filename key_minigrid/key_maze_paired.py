@@ -495,10 +495,11 @@ def main(config=None, project="JAXUED_TEST"):
         log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
 
         # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+        if config["log_animations"]:
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
@@ -559,10 +560,12 @@ def main(config=None, project="JAXUED_TEST"):
             init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
             network = network_cls(env.action_space(env_params).n, **network_kws)
             network_params = network.init(rng, init_x, network_cls.initialize_carry((config["num_train_envs"],)))
+            learning_rate = linear_schedule if config[f"{prefix}anneal_lr"] else config[f"{prefix}lr"]
             tx = optax.chain(
                 optax.clip_by_global_norm(config[f"{prefix}max_grad_norm"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-                # optax.adam(learning_rate=config[f"{prefix}lr"], eps=1e-5),
+                #optax.adam(learning_rate=linear_schedule, eps=1e-5),
+                #optax.adam(learning_rate=config[f"{prefix}lr"], eps=1e-5),
+                optax.adam(learning_rate=learning_rate, eps=1e-5),
             )
             return BaseTrainState.create(
                 apply_fn=network.apply,

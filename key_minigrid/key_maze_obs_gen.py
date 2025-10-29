@@ -782,19 +782,20 @@ def main(config=None, project="JAXUED_TEST"):
     
         log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
 
-        # generation animations
-        animations = []
-        for i in range(8):
-            frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
-            frames = np.array(frames[:episode_length])
-            animations.append(wandb.Video(frames, fps=4))
-        log_dict.update({f"images/level_animations": animations})
+        if config["log_animations"]:
+            # generation animations
+            animations = []
+            for i in range(8):
+                frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
+                frames = np.array(frames[:episode_length])
+                animations.append(wandb.Video(frames, fps=4))
+            log_dict.update({f"images/level_animations": animations})
 
-        # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+            # animations
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
