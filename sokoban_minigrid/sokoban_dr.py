@@ -1,25 +1,23 @@
-import json
 import os
+import json
 import time
 from typing import Sequence, Tuple
 import numpy as np
 import jax
 import jax.numpy as jnp
-from jaxued.environments.underspecified_env import EnvParams, EnvState, UnderspecifiedEnv
-from jaxued.utils import compute_max_mean_returns_epcount
 import optax
-from flax import struct
 from flax.training.train_state import TrainState as BaseTrainState
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 import distrax
 import orbax.checkpoint as ocp
 import wandb
-from jaxued.environments.maze.env_editor import MazeEditor, KeyMazeEditor, Observation
+from jaxued.environments.underspecified_env import EnvParams, EnvState, Observation, UnderspecifiedEnv
 from jaxued.linen import ResetRNN
-from jaxued.environments import Maze, MazeRenderer
-from jaxued.environments.maze import Level
-from jaxued.wrappers import AutoReplayWrapper
+from jaxued.environments import SokobanMaze, MazeRenderer
+from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator
+from jaxued.utils import max_mc, positive_value_loss, compute_max_mean_returns_epcount
+from jaxued.wrappers import AutoResetWrapper
 import chex
 
 import logging
@@ -28,13 +26,14 @@ from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
-# region PPO helper functions    
-@struct.dataclass
-class TrainState:
-    update_count: int
-    pro_train_state: BaseTrainState
-    adv_train_state: BaseTrainState
 
+class TrainState(BaseTrainState):
+    update_count: int
+    last_hstate: chex.ArrayTree
+    last_obs: chex.ArrayTree
+    last_env_state: chex.ArrayTree
+
+# region PPO helper functions
 def compute_gae(
     gamma: float,
     lambd: float,
@@ -72,66 +71,6 @@ def compute_gae(
     )
     return advantages, advantages + values
 
-def compute_clipped_gae(
-    gamma: float,
-    lambd: float,
-    last_value: chex.Array,
-    values: chex.Array,
-    rewards: chex.Array,
-    dones: chex.Array,
-    traj_idxs: chex.Array, # Currently not used
-    use_max_value: bool = False,
-) -> Tuple[chex.Array, chex.Array]:
-    """This takes in arrays of shape (NUM_STEPS, NUM_ENVS) and returns the advantages and targets.
-
-    Args:
-        gamma (float): 
-        lambd (float): 
-        last_value (chex.Array):  Shape (NUM_ENVS)
-        values (chex.Array): Shape (NUM_STEPS, NUM_ENVS)
-        rewards (chex.Array): Shape (NUM_STEPS, NUM_ENVS)
-        dones (chex.Array): Shape (NUM_STEPS, NUM_ENVS)
-
-    Returns:
-        Tuple[chex.Array, chex.Array]: advantages, targets; each of shape (NUM_STEPS, NUM_ENVS)
-    """
-    extended_values = jnp.append(values, last_value[None, ...], axis=0)
-    deltas = rewards + gamma * extended_values[1:] * (1 - dones) - extended_values[:-1]
-
-    start_index = jnp.arange(values.shape[0])
-    def compute_gae_at_timestep(carry, x):
-        gae_array, td_total_array, is_done_array, cur_idx = carry
-        
-        delta, done = x
-        delta = delta[None, ...] * (cur_idx >= start_index[..., None])
-        done = done[None, ...] * (cur_idx >= start_index[..., None])
-
-        i = (cur_idx - start_index)[..., None]
-
-        td_total_array = td_total_array + gamma**i * delta
-    
-        clipped_td_total_array = jnp.minimum(td_total_array, 0)
-        if use_max_value:
-            td_total_array = clipped_td_total_array
-
-        gae_array = gae_array + (lambd**(i)) * clipped_td_total_array * (1 - is_done_array) + ((lambd**(i+1))/(1 - lambd)) * clipped_td_total_array * done * (1 - is_done_array)
-        is_done_array = jnp.logical_or(is_done_array, done)
-
-        return (gae_array, td_total_array, is_done_array, cur_idx + 1), None
-
-    carry, _ = jax.lax.scan(
-        compute_gae_at_timestep,
-        (jnp.zeros_like(values), jnp.zeros_like(values), jnp.zeros_like(dones), 0),
-        (deltas, dones),
-        unroll=16,
-    )
-    gae_array, td_total_array, is_done_array, cur_idx = carry
-    i = (cur_idx - start_index)[..., None]
-    clipped_td_total_array = jnp.minimum(td_total_array, 0)
-    advantages = (1 - lambd)*(gae_array + ((lambd**(i))/(1 - lambd)) * clipped_td_total_array * (1 - is_done_array))
-
-    return advantages, advantages + values
-
 def sample_trajectories_rnn(
     rng: chex.PRNGKey,
     env: UnderspecifiedEnv,
@@ -146,6 +85,7 @@ def sample_trajectories_rnn(
     """This samples trajectories from the environment using the agent specified by the `train_state`.
 
     Args:
+
         rng (chex.PRNGKey): Singleton 
         env (UnderspecifiedEnv): 
         env_params (EnvParams): 
@@ -344,49 +284,9 @@ def update_actor_critic_rnn(
 
     return jax.lax.scan(update_epoch, (rng, train_state), None, n_epochs)
 
-def compute_min_steps_to_goal(level, has_key, to_key=False, key_values=0):
-    #wall_values = jnp.repeat(jnp.where(level.wall_map, jnp.inf, -jnp.inf)[None, ...], 4, axis=0)
-    door_map = jnp.zeros_like(level.wall_map)
-    door_map = jax.lax.select(
-        jnp.logical_and(~has_key, level.door_placed == 1),
-        door_map.at[level.door_pos[1], level.door_pos[0]].set(True),
-        door_map
-    )
-    wall_values = jnp.repeat(jnp.where(jnp.logical_or(door_map, level.wall_map), jnp.inf, -jnp.inf)[None, ...], 4, axis=0)
-    max_height, max_width = level.wall_map.shape
-    
-    def compute_next(values):
-        fwd_values = jnp.array([
-            jnp.roll(values[0], -1, axis=1).astype(float).at[:,-1].set(jnp.inf),
-            jnp.roll(values[1], -1, axis=0).astype(float).at[-1,:].set(jnp.inf),
-            jnp.roll(values[2], 1, axis=1).astype(float).at[:,0].set(jnp.inf),
-            jnp.roll(values[3], 1, axis=0).astype(float).at[0,:].set(jnp.inf),
-        ])
-        new_values = jnp.empty_like(values)
-        for i in range(4):
-            new_values = new_values.at[i].set(jnp.min(
-                jnp.array([values[i], values[i-1] + 1, values[(i+1)%4] + 1, fwd_values[i] + 1]), axis=0
-            ))
-        return jnp.maximum(new_values, wall_values)
-    
-    def cond_fn(carry):
-        values, next_values = carry
-        return jnp.any(values != next_values)
-    
-    def body_fn(carry):
-        _, values = carry
-        return values, compute_next(values)
-    
-    values = jnp.full((4, max_height, max_width), jnp.inf)
-    values = jax.lax.select(
-        to_key,
-        jax.lax.select(level.key_placed == 1, values.at[:, level.key_pos[1], level.key_pos[0]].set(key_values), values),
-        jax.lax.select(level.goal_placed, values.at[:, level.goal_pos[1], level.goal_pos[0]].set(key_values), values)
-    )
-    
-    return jax.lax.while_loop(cond_fn, body_fn, (values, compute_next(values)))[0]
-
 class ActorCritic(nn.Module):
+    """This is an actor critic class that uses an LSTM
+    """
     action_dim: Sequence[int]
     
     @nn.compact
@@ -421,46 +321,6 @@ class ActorCritic(nn.Module):
     @staticmethod
     def initialize_carry(batch_dims):
         return nn.OptimizedLSTMCell(features=256).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, 256))
-
-
-class AdversaryActorCritic(nn.Module):
-    # The adversary's network architecture
-    action_dim: Sequence[int]
-    max_timesteps: int = 50
-    
-    @nn.compact
-    def __call__(self, inputs: Tuple[Observation, chex.Array], hidden):
-        obs, dones = inputs
-        
-        img_embed = nn.Conv(32, kernel_size=(3, 3), strides=(1, 1), padding="VALID")(obs.image)
-        img_embed = img_embed.reshape(*img_embed.shape[:-3], -1)
-        img_embed = nn.relu(img_embed)
-        
-        time_value = nn.Embed(self.max_timesteps + 1, 10, name="time_embed", embedding_init=orthogonal(1.0))(jnp.clip(obs.time, None, self.max_timesteps))
-        random_z_value = obs.random_z
-        embedding = jnp.concatenate((img_embed, time_value, random_z_value), axis=-1)
-
-        hidden, embedding = ResetRNN(nn.OptimizedLSTMCell(features=256))((embedding, dones), initial_carry=hidden)
-        embedding = nn.LayerNorm()(embedding)
-
-        actor_mean = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="actor0")(embedding)
-        actor_mean = nn.LayerNorm()(actor_mean)
-        actor_mean = nn.tanh(actor_mean)
-        actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor1")(actor_mean)
-
-        # Mask out this
-        pi = distrax.Categorical(logits=actor_mean)
-
-        critic = nn.Dense(256, kernel_init=orthogonal(2), bias_init=constant(0.0), name="critic0")(embedding)
-        critic = nn.LayerNorm()(critic)
-        critic = nn.tanh(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic1")(critic)
-
-        return hidden, pi, jnp.squeeze(critic, axis=-1)
-    
-    @staticmethod
-    def initialize_carry(batch_dims):
-        return nn.OptimizedLSTMCell(features=256).initialize_carry(jax.random.PRNGKey(0), (*batch_dims, 256))
 # endregion
 
 # region checkpointing
@@ -483,7 +343,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     # save the config
     with open(os.path.join(overall_save_dir, 'config.json'), 'w+') as f:
         f.write(json.dumps(config.as_dict(), indent=True))
-    
+
     checkpoint_manager = ocp.CheckpointManager(
         os.path.join(overall_save_dir, 'models'),
         options=ocp.CheckpointManagerOptions(
@@ -491,44 +351,43 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
             max_to_keep=config['max_number_of_checkpoints'],
         )
     )
-    
     return checkpoint_manager
 #endregion
+
+def compute_score(config, dones, values, max_returns, advantages):
+    if config['score_function'] == "MaxMC":
+        return max_mc(dones, values, max_returns)
+    elif config['score_function'] == "pvl":
+        return positive_value_loss(dones, advantages)
+    else:
+        raise ValueError(f"Unknown score function: {config['score_function']}")
 
 def main(config=None, project="JAXUED_TEST"):
     wandb_config = OmegaConf.to_container(
             config, resolve=True, throw_on_missing=False
         )
     
-    #run = wandb.init(config=config, project=project, group=config["group_name"], tags=["PAIRED",])
-    group = "Initial_Gen" if config['set_init_pos'] else "Initial_Gen_Rand"
-    run = wandb.init(config=wandb_config, project=project, tags=["PAIRED",], group=group)
+    #run = wandb.init(config=config, project=project, group=config["group_name"], tags=["DR",])
+    run = wandb.init(config=wandb_config, project=project, tags=["DR", "key"], group="DR")
+    
     
     wandb.define_metric("num_updates")
     wandb.define_metric("num_env_steps")
     wandb.define_metric("solve_rate/*", step_metric="num_updates")
     wandb.define_metric("level_sampler/*", step_metric="num_updates")
     wandb.define_metric("agent/*", step_metric="num_updates")
-    wandb.define_metric("misc/*", step_metric="num_updates")
     wandb.define_metric("return/*", step_metric="num_updates")
-    wandb.define_metric("eval_ep_length/*", step_metric="num_updates")
+    wandb.define_metric("eval_ep_lengths/*", step_metric="num_updates")
 
     def log_eval(stats):
         logger.info(f"Logging update: {stats['update_count']}")
         
         # generic stats
-        env_steps = 2 * stats["update_count"] * config["num_train_envs"] * config["student_num_steps"]
+        env_steps = stats["update_count"] * config["num_train_envs"] * config["num_steps"]
         log_dict = {
-            "misc/mean_num_blocks": stats["mean_num_blocks"].mean(),
             "num_updates": stats["update_count"],
             "num_env_steps": env_steps,
             "sps": env_steps / stats['time_delta'],
-            "misc/prot_perf_mean": stats['pro_mean_returns'].mean(),
-            "misc/prot_perf_max":  stats['pro_max_returns'].mean(),
-            "misc/pro_num_episodes": stats['pro_eps'].mean(),
-            "misc/regret":   stats['est_regret'].mean(),
-            "misc/pro_regret":   stats['pro_regret'].mean(),
-            "misc/key_optimal": stats['key_optimal'].mean(),
         }
         
         # evaluation performance
@@ -539,13 +398,20 @@ def main(config=None, project="JAXUED_TEST"):
         log_dict.update({f"return/{name}": ret for name, ret in zip(config["eval_levels"], returns)})
         log_dict.update({"return/mean": returns.mean()})
         log_dict.update({"eval_ep_lengths/mean": stats['eval_ep_lengths'].mean()})
-        def make_caption(i):
-            pro_mean_returns = jnp.round(stats['pro_mean_returns'][-1][i], 2) # .flatten()
-            est_regret       = jnp.round(stats['est_regret'][-1][i], 2) # .flatten()
-            pro_regret       = jnp.round(stats['pro_regret'][-1][i], 2) # .flatten()
-            return f"P({pro_mean_returns:.2f}, {pro_regret:.2f})|R({est_regret:.2f})"
+        
+        # training loss
+        loss, (critic_loss, actor_loss, entropy) = stats["losses"]
+        log_dict.update({
+            "agent/loss": loss,
+            "agent/critic_loss": critic_loss,
+            "agent/actor_loss": actor_loss,
+            "agent/entropy": entropy,
+            "misc/prot_perf_mean": stats['pro_mean_returns'].mean(),
+            "misc/prot_perf_max":  stats['pro_max_returns'].mean(),
+            "misc/pro_num_episodes": stats['pro_eps'].mean(),
+        })
     
-        log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
+        #log_dict.update({f"images/levels": [wandb.Image(np.array(image)) for i, image in enumerate(stats["levels"])[:8]]})
 
         # animations
         if config["log_animations"]:
@@ -553,211 +419,121 @@ def main(config=None, project="JAXUED_TEST"):
                 frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
                 frames = np.array(frames[:episode_length])
                 log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
-
+        
         wandb.log(log_dict)
     
-    env = Maze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
-    adv_env = KeyMazeEditor(env, random_z_dimensions=config['adv_random_z_dimension'], zero_out_random_z=config['adv_zero_out_random_z'], set_init_pos=config['set_init_pos'])
-    eval_env = env
-    env_renderer = MazeRenderer(env, tile_size=8)
-    env = AutoReplayWrapper(env)
+    # Setup the environment
+    env = SokobanMaze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
+    eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
+    sample_random_level = make_level_sokoban_generator(env.max_height, env.max_width, config["n_walls"], config['n_boxes'])
+    env_renderer = MazeRenderer(env, tile_size=8, render_boxes=True)
+    eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
+    env = AutoResetWrapper(env, sample_random_level)
     env_params = env.default_params
-    adv_env_params = adv_env.default_params
-
-    def sample_empty_level():
-        w, h = env._env.max_width, env._env.max_height
-        return Level(
-            wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
-            width=w,
-            height=h,
-            
-            # These values don't matter, as the adversary overwrites them.
-            goal_pos=jnp.array([0, 0], dtype=jnp.uint32),
-            agent_pos=jnp.array([1, 1], dtype=jnp.uint32),
-            agent_dir=jnp.array(0, dtype=jnp.uint8),
-            goal_placed=jnp.array(False, dtype=jnp.bool_),
+    
+    @jax.jit
+    def create_train_state(rng) -> TrainState:
+        # Creates the train state
+        def linear_schedule(count):
+            frac = (
+                1.0
+                - (count // (config["num_minibatches"] * config["epoch_ppo"]))
+                / config["num_updates"]
+            )
+            return config["lr"] * frac
+        obs, _ = env.reset_to_level(rng, sample_random_level(rng), env_params)
+        obs = jax.tree_map(
+            lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
+            obs,
+        )
+        init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
+        network = ActorCritic(env.action_space(env_params).n)
+        rng, _rng = jax.random.split(rng)
+        network_params = network.init(_rng, init_x, ActorCritic.initialize_carry((config["num_train_envs"],)))
+        learning_rate = linear_schedule if config["anneal_lr"] else config["lr"]
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["max_grad_norm"]),
+            #optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            #optax.adam(learning_rate=config["lr"], eps=1e-5),
+            optax.adam(learning_rate=learning_rate, eps=1e-5),
         )
     
-    def sample_random_init_level(rng):
-        w, h = env._env.max_width, env._env.max_height
-        rng_pos, rng_dir = jax.random.split(rng)
-        agent_pos = jax.random.randint(rng_pos, (2,), 0, jnp.array([h, w]), dtype=jnp.uint32)
-        agent_dir = jax.random.randint(rng_dir, (), 0, 4, dtype=jnp.uint8)
-        return Level(
-            wall_map=jnp.zeros((h, w), dtype=jnp.bool_),
-            width=w,
-            height=h,
-            
-            # These values don't matter, as the adversary overwrites them.
-            goal_pos=jnp.array([0, 0], dtype=jnp.uint32),
-            agent_pos=agent_pos,
-            agent_dir=agent_dir,
-            goal_placed=jnp.array(True, dtype=jnp.bool_),
+        rng_levels, rng_reset = jax.random.split(rng)
+        new_levels = jax.vmap(sample_random_level)(jax.random.split(rng_levels, config["num_train_envs"]))
+        init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_reset, config["num_train_envs"]), new_levels, env_params)
+        
+        return TrainState.create(
+            apply_fn=network.apply,
+            params=network_params,
+            tx=tx,
+            update_count=0,
+            last_hstate=ActorCritic.initialize_carry((config["num_train_envs"],)),
+            last_obs=init_obs,
+            last_env_state=init_env_state,
         )
 
-    @jax.jit
-    def create_train_state(rng):
-        def create_inner_train_state(rng, env, env_params, network_cls, prefix, network_kws={}):
-            def linear_schedule(count):
-                frac = (
-                    1.0
-                    - (count // (config[f"{prefix}num_minibatches"] * config[f"{prefix}epoch_ppo"]))
-                    / config["num_updates"]
-                )
-                return config[f"{prefix}lr"] * frac
-            obs, _ = env.reset_to_level(rng, sample_empty_level(), env_params)
-            obs = jax.tree_map(
-                lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
-                obs,
-            )
-            init_x = (obs, jnp.zeros((256, config["num_train_envs"])))
-            network = network_cls(env.action_space(env_params).n, **network_kws)
-            network_params = network.init(rng, init_x, network_cls.initialize_carry((config["num_train_envs"],)))
-            learning_rate = linear_schedule if config[f"{prefix}anneal_lr"] else config[f"{prefix}lr"]
-            tx = optax.chain(
-                optax.clip_by_global_norm(config[f"{prefix}max_grad_norm"]),
-                #optax.adam(learning_rate=linear_schedule, eps=1e-5),
-                #optax.adam(learning_rate=config[f"{prefix}lr"], eps=1e-5),
-                optax.adam(learning_rate=learning_rate, eps=1e-5),
-            )
-            return BaseTrainState.create(
-                apply_fn=network.apply,
-                params=network_params,
-                tx=tx,
-            )
-        rng_pro, rng_ant, rng_adv = jax.random.split(rng, 3)
-        return TrainState(
-            update_count = 0,
-            pro_train_state = create_inner_train_state(rng_pro, env, env_params, ActorCritic, "student_"),
-            adv_train_state = create_inner_train_state(rng_adv, adv_env, adv_env_params, AdversaryActorCritic, "adv_", network_kws={"max_timesteps": config["adv_num_steps"]})
-        )
-
-    def train_step(carry, _):
-        def rollout(rng, env, env_params, train_state, init_hstate, levels, num_steps, prefix):
-            # Single rollout
-            rng, _rng = jax.random.split(rng)
-            init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(_rng, config["num_train_envs"]), levels, env_params)
-            (
-                (rng, train_state, hstate, last_obs, last_env_state, last_value),
-                traj,
-            ) = sample_trajectories_rnn(
-                rng,
-                env,
-                env_params,
-                train_state,
-                init_hstate,
-                init_obs,
-                init_env_state,
-                config["num_train_envs"],
-                num_steps,
-            )
-            obs, actions, rewards, dones, log_probs, values, info = traj
-            advantages, targets = compute_gae(config[f"{prefix}gamma"], config[f"{prefix}gae_lambda"], last_value, values, rewards, dones)
-            return (obs, actions, dones, log_probs, values, targets, advantages), (dones, rewards, last_env_state, last_value, info, traj)
-        
-        def update(rng, train_state, init_hstate, rollout, prefix):
-            # Returns: (rng, train_state), losses
-            return update_actor_critic_rnn(
-                rng,
-                train_state,
-                init_hstate,
-                rollout,
-                config["num_train_envs"],
-                config[f"{prefix}num_steps"],
-                config[f"{prefix}num_minibatches"],
-                config[f"{prefix}epoch_ppo"],
-                config[f"{prefix}clip_eps"],
-                config[f"{prefix}entropy_coeff"],
-                config[f"{prefix}critic_coeff"],
-                update_grad=True,
-            )
-        
-        def get_shortest_path(level):
-            distances_to_goal = compute_min_steps_to_goal(level, jnp.array(True))
-            distances_to_goal_no_key = compute_min_steps_to_goal(level, jnp.array(False))
-
-            key_values = distances_to_goal[:, level.key_pos[1], level.key_pos[0]]
-            distances_via_key = compute_min_steps_to_goal(level, jnp.array(False), jnp.array(True), key_values)
-
-            all_optimal_distances = jnp.stack((
-                jnp.minimum(distances_via_key, distances_to_goal_no_key),
-                distances_to_goal
-            ))
-
-            key_optimal = (distances_via_key < distances_to_goal_no_key)[level.agent_dir, level.agent_pos[1], level.agent_pos[0]]
-            agent_pos = level.agent_pos
-            agent_dir = level.agent_dir
-
-            return all_optimal_distances[0, agent_dir, agent_pos[1], agent_pos[0]], key_optimal
-        
+    def train_step(carry: Tuple[chex.PRNGKey, TrainState], _):
+        """
+            Samples new (randomly-generated) levels and train on them
+        """
         rng, train_state = carry
+        rng, rng_replay = jax.random.split(rng)
         
-        pro_train_state = train_state.pro_train_state
-        adv_train_state = train_state.adv_train_state
-        
-        # adversary rollout (aka level generation)
-        rng, rng_levels, rng_rollout = jax.random.split(rng, 3)
-        if config['set_init_pos']:
-            empty_levels = jax.tree_map(lambda x: jnp.array([x]).repeat(config["num_train_envs"], axis=0), sample_empty_level())
-        else: 
-            empty_levels = jax.vmap(sample_random_init_level)(jax.random.split(rng_levels, config["num_train_envs"]))
-
-        adv_rollout, (_, _, last_env_state, last_value, _, _) = rollout(rng_rollout, adv_env, adv_env_params, adv_train_state, AdversaryActorCritic.initialize_carry((config["num_train_envs"],)), empty_levels, config["adv_num_steps"], "adv_")
-        levels = last_env_state.level
-
-        # protagonist rollout
-        rng, _rng = jax.random.split(rng)
-        pro_rollout, (dones, rewards, _, pro_last_value, _, pro_traj) = rollout(_rng, env, env_params, pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"],)), levels, config["student_num_steps"], "student_")
+        (
+            (rng, train_state, hstate, last_obs, last_env_state, last_value),
+            (obs, actions, rewards, dones, log_probs, values, info),
+        ) = sample_trajectories_rnn(
+            rng,
+            env,
+            env_params,
+            train_state,
+            train_state.last_hstate,
+            train_state.last_obs,
+            train_state.last_env_state,
+            config["num_train_envs"],
+            config["num_steps"],
+        )
+        advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
         pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
-
-        obs, actions, dones, log_probs, values, targets, advantages = adv_rollout
-
-        # Adversary Rewards
-        agent_failed = pro_mean_returns == 0
-        def get_clipped_advantages(traj, last_value, prefix, num_envs=config["num_train_envs"]):
-            obs, actions, rewards, dones, log_probs, values, info = traj
-            clipped_advantages, _ = compute_clipped_gae(config[f"{prefix}gamma"], config[f"{prefix}gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
-            return clipped_advantages
-        clipped_advantages = get_clipped_advantages(pro_traj, pro_last_value, 'student_')
-        clipped_advantages_reward = clipped_advantages * (~agent_failed)
-
-        est_regret = -clipped_advantages_reward.sum(axis=0)
-        rewards = jnp.zeros_like(values).at[-1].set(est_regret)
-        advantages, targets = compute_gae(config["adv_gamma"], config["adv_gae_lambda"], last_value, values, rewards, dones)
-
-        adv_rollout = (obs, actions, dones.at[-1].set(True), log_probs, values, targets, advantages) # set this to scaled advantages for obs based
-                
-        (rng, pro_train_state), pro_losses = update(rng, pro_train_state, ActorCritic.initialize_carry((config["num_train_envs"],)), pro_rollout, "student_")
-        (rng, adv_train_state), adv_losses = update(rng, adv_train_state, AdversaryActorCritic.initialize_carry((config["num_train_envs"],)), adv_rollout, "adv_")
-
-        shortest_path, key_optimal = jax.vmap(get_shortest_path, in_axes=[0,])(levels)
-        pro_traj_length = jnp.minimum(((1 - pro_mean_returns)*250/0.9), 250)
-
-        pro_regret = jnp.maximum(pro_traj_length - shortest_path, 0)
+        
+        (rng, train_state), losses = update_actor_critic_rnn(
+            rng,
+            train_state,
+            train_state.last_hstate,
+            (obs, actions, dones, log_probs, values, targets, advantages),
+            config["num_train_envs"],
+            config["num_steps"],
+            config["num_minibatches"],
+            config["epoch_ppo"],
+            config["clip_eps"],
+            config["entropy_coeff"],
+            config["critic_coeff"],
+            update_grad=True,
+        )
         
         metrics = {
-            "pro_losses": jax.tree_map(lambda x: x.mean(), pro_losses),
-            "adv_losses": jax.tree_map(lambda x: x.mean(), adv_losses),
-            "mean_num_blocks": levels.wall_map.sum() / config["num_train_envs"],
+            "losses": jax.tree_map(lambda x: x.mean(), losses),
             "pro_mean_returns": pro_mean_returns,
             "pro_max_returns":  pro_max_returns,
-            "est_regret":       est_regret,
             "pro_eps": pro_eps,
-            "levels": levels,
-            "pro_regret":       pro_regret,
-            "key_optimal":      key_optimal,
+            "levels": train_state.last_env_state.env_state,
         }
         
         train_state = train_state.replace(
             update_count=train_state.update_count + 1,
-            pro_train_state=pro_train_state,
-            adv_train_state=adv_train_state,
+            last_hstate=hstate,
+            last_env_state=last_env_state,
+            last_obs=last_obs
         )
         return (rng, train_state), metrics
     
-    def eval(rng, train_state):
+    def eval(rng: chex.PRNGKey, train_state: TrainState):
+        """
+        This evaluates the current policy on the set of evaluation levels specified by config["eval_levels"].
+        It returns (states, cum_rewards, episode_lengths), with shapes (num_steps, num_eval_levels, ...), (num_eval_levels,), (num_eval_levels,)
+        """
         rng, rng_reset = jax.random.split(rng)
-        levels = Level.load_prefabs(config["eval_levels"])
+        levels = ObservedLevel.load_prefabs(config["eval_levels"])
         num_levels = len(config["eval_levels"])
         init_obs, init_env_state = jax.vmap(eval_env.reset_to_level, (0, 0, None))(jax.random.split(rng_reset, num_levels), levels, env_params)
         states, rewards, episode_lengths = evaluate_rnn(
@@ -776,16 +552,24 @@ def main(config=None, project="JAXUED_TEST"):
     
     @jax.jit
     def train_and_eval_step(runner_state, _):
+        """
+            This function runs the train_step for a certain number of iterations, and then evaluates the policy.
+            It returns the updated train state, and a dictionary of metrics.
+        """
+        # Train
         (rng, train_state), metrics = jax.lax.scan(train_step, runner_state, None, config["eval_freq"])
-        
+
+        # Eval        
         rng, rng_eval = jax.random.split(rng)
-        states, cum_rewards, episode_lengths = jax.vmap(eval, (0, None))(jax.random.split(rng_eval, config["eval_num_attempts"]), train_state.pro_train_state)
+        states, cum_rewards, episode_lengths = jax.vmap(eval, (0, None))(jax.random.split(rng_eval, config["eval_num_attempts"]), train_state)
+        
+        # Collect Metrics
         eval_solve_rates = jnp.where(cum_rewards > 0, 1., 0.).mean(axis=0) # (num_eval_levels,)
         eval_returns = cum_rewards.mean(axis=0) # (num_eval_levels,)
         
         # just grab the first run
         states, episode_lengths = jax.tree_map(lambda x: x[0], (states, episode_lengths)) # (num_steps, num_eval_levels, ...), (num_eval_levels,)
-        images = jax.vmap(jax.vmap(env_renderer.render_state, (0, None)), (0, None))(states, env_params) # (num_steps, num_eval_levels, ...)
+        images = jax.vmap(jax.vmap(eval_env_renderer.render_state, (0, None)), (0, None))(states, env_params) # (num_steps, num_eval_levels, ...)
         frames = images.transpose(0, 1, 4, 2, 3) # WandB expects color channel before image dimensions when dealing with animations for some reason
         
         metrics["update_count"] = train_state.update_count
@@ -794,7 +578,7 @@ def main(config=None, project="JAXUED_TEST"):
         metrics["eval_ep_lengths"]  = episode_lengths
         metrics["eval_animation"] = (frames, episode_lengths)
         metrics["levels"] = jax.vmap(env_renderer.render_level, (0, None))(jax.tree_map(lambda x: x[-1], metrics["levels"]), env_params)
-        
+
         return (rng, train_state), metrics
     
     def eval_checkpoint(og_config):
@@ -805,15 +589,16 @@ def main(config=None, project="JAXUED_TEST"):
         rng_init, rng_eval = jax.random.split(jax.random.PRNGKey(10000))
         def load(rng_init, checkpoint_directory: str):
             with open(os.path.join(checkpoint_directory, 'config.json')) as f: config = json.load(f)
-            checkpoint_manager = ocp.CheckpointManager(os.path.join(os.getcwd(), checkpoint_directory, 'models'), item_handlers=ocp.StandardCheckpointHandler())
+            checkpoint_manager = ocp.CheckpointManager(os.path.join(os.getcwd(), checkpoint_directory, 'models'), ocp.PyTreeCheckpointer())
 
             train_state_og: TrainState = create_train_state(rng_init)
+            all_states = []
             step = checkpoint_manager.latest_step() if og_config['checkpoint_to_eval'] == -1 else og_config['checkpoint_to_eval']
 
             loaded_checkpoint = checkpoint_manager.restore(step)
-            params = loaded_checkpoint['pro_train_state']['params']
-            train_state = train_state_og.replace(pro_train_state=train_state_og.pro_train_state.replace(params=params))
-            return train_state.pro_train_state, config
+            params = loaded_checkpoint['params']
+            train_state = train_state_og.replace(params=params)
+            return train_state, config
         
         train_state, config = load(rng_init, og_config['checkpoint_directory'])
         states, cum_rewards, episode_lengths = jax.vmap(eval, (0, None))(jax.random.split(rng_eval, og_config["eval_num_attempts"]), train_state)
@@ -822,8 +607,10 @@ def main(config=None, project="JAXUED_TEST"):
         np.savez_compressed(os.path.join(save_loc, 'results.npz'), states=np.asarray(states), cum_rewards=np.asarray(cum_rewards), episode_lengths=np.asarray(episode_lengths), levels=config['eval_levels'])
         return states, cum_rewards, episode_lengths
 
-    if config['mode'] == 'eval': return eval_checkpoint(config) # evaluate and exit early
+    if config['mode'] == 'eval':
+        return eval_checkpoint(config) # evaluate and exit early
 
+    # Set up the train states
     rng = jax.random.PRNGKey(config["seed"])
     rng_init, rng_train = jax.random.split(rng)
     
@@ -832,20 +619,22 @@ def main(config=None, project="JAXUED_TEST"):
 
     logger.info('Training')
     
+    # And run the train_eval_sep function for the specified number of updates
     if config["checkpoint_save_interval"] > 0:
         checkpoint_manager = setup_checkpointing(config, train_state, env, env_params)
-    start_time = time.time()
     for eval_step in range(config["num_updates"] // config["eval_freq"]):
+        start_time = time.time()
         runner_state, metrics = train_and_eval_step(runner_state, None)
         curr_time = time.time()
         metrics['time_delta'] = curr_time - start_time
         log_eval(metrics)
         if config["checkpoint_save_interval"] > 0:
-            checkpoint_manager.save(eval_step, args=ocp.args.StandardSave(runner_state[1]))
+            checkpoint_manager.save(eval_step, runner_state[1], args=ocp.args.StandardSave(runner_state[1]))
             checkpoint_manager.wait_until_finished()
     return runner_state[1]
 
-@hydra.main(config_path="config", config_name="main_paired", version_base=None)
+
+@hydra.main(config_path="config", config_name="main_dr", version_base=None)
 def config_main(config: DictConfig):
     if config["num_env_steps"] is not None:
         config["num_updates"] = config["num_env_steps"] // (config["num_train_envs"] * config["num_steps"])

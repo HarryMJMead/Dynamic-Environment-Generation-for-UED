@@ -1,4 +1,4 @@
-project: key_minigrid_UED
+project: key_minigrid_UED_Checkpoint
 run_name: None
 seed: 1
 # === Train vs Eval ===
@@ -27,3 +27,4 @@ agent_view_size: 5
 
 # === WandB ===
 group: DEGen
+log_animations: False

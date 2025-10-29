@@ -15,12 +15,13 @@ class MazeRenderer(object):
             tile_size (int, optional): The number of pixels each tile should take up. Defaults to 32.
             render_border (bool, optional): If true, renders the one-tile thick border around the level. Defaults to True.
     """
-    def __init__(self, env: Maze, tile_size: int=32, render_border: bool=True):
+    def __init__(self, env: Maze, tile_size: int=32, render_border: bool=True, render_boxes: bool=False):
         self.env = env
         self.tile_size = tile_size
         self.render_border = render_border
         self._atlas = jnp.array(_make_tile_atlas(tile_size))
         self._show_observations = False
+        self._render_boxes = render_boxes
         
     @partial(jax.jit, static_argnums=(0,))
     def render_level(self, level, env_params):
@@ -46,6 +47,10 @@ class MazeRenderer(object):
         key_pos = env_state.key_pos + self.render_border
         
         cells = jnp.where(env_state.wall_map, 1, 0)
+        if self._render_boxes:
+            cells = jnp.where(env_state.box_map, jnp.ones_like(cells)*12, cells)
+            cells = jnp.where(env_state.box_goal_map, jnp.ones_like(cells)*14, cells)
+            cells = jnp.where(jnp.logical_and(env_state.box_map, env_state.box_goal_map), jnp.ones_like(cells)*13, cells)
         if self._show_observations:
             cells = jnp.where(env_state.observation_map, cells, jnp.ones_like(cells)*7)
         if self.render_border:
@@ -110,11 +115,8 @@ class MazeRenderer(object):
 
 # This function used to have more differences than just show observations - kept like this to not break old code requiring ObserveMmazeRender
 class ObservedMazeRenderer(MazeRenderer):
-    def __init__(self, env: Maze, tile_size: int=32, render_border: bool=True):
-        self.env = env
-        self.tile_size = tile_size
-        self.render_border = render_border
-        self._atlas = jnp.array(_make_tile_atlas(tile_size))
+    def __init__(self, env: Maze, tile_size: int=32, render_border: bool=True, render_boxes: bool=True):
+        super().__init__(env, tile_size, render_border, render_boxes)
         self._show_observations = True
 
 class LocalObservedMazeRenderer(ObservedMazeRenderer):
@@ -133,12 +135,20 @@ class LocalObservedMazeRenderer(ObservedMazeRenderer):
 
         color_mask = jnp.zeros(env_state.level.wall_map.shape, dtype=jnp.uint8)
         color_mask = color_mask.at[env_state.agent_locs[:, 1], env_state.agent_locs[:, 0]].set(jnp.linspace(100, 255, env_state.agent_dirs.shape[0]).astype(jnp.uint8))
-        if self.render_border:
-            color_mask = jnp.pad(color_mask, 1, mode="constant", constant_values=True)
-        color_image = jnp.kron(color_mask, jnp.ones((tile_size, tile_size), dtype=color_mask.dtype))
+        
+        if self._render_boxes:
+            agents = jnp.where(env_state.box_locs.any(axis=0), 12, agents)
+            overlap = jnp.logical_and(env_state.box_locs, env_state.level.box_goal_map)
+            agents = jnp.where(overlap.any(axis=0), 13, agents)
+
+            box_color_mask = (env_state.box_locs * jnp.linspace(100, 255, 2)[..., None, None]).max(axis=0).astype(jnp.uint8)
+            color_mask = jnp.where(env_state.box_locs.any(axis=0), box_color_mask, color_mask)
 
         if self.render_border:
+            color_mask = jnp.pad(color_mask, 1, mode="constant", constant_values=True)
             agents = jnp.pad(agents, 1, mode="constant", constant_values=True)
+
+        color_image = jnp.kron(color_mask, jnp.ones((tile_size, tile_size), dtype=color_mask.dtype))
         agent_image = self._atlas[agents].transpose(0, 2, 1, 3, 4).reshape(height_px, width_px, 3)
 
         agent_color_image = agent_image.at[:, :, 2].add(color_image).clip(0, 255)
@@ -195,7 +205,7 @@ def _make_tile_atlas(tile_size):
 
         return fn
     
-    atlas = np.empty((12, tile_size, tile_size, 3), dtype=np.uint8)
+    atlas = np.empty((15, tile_size, tile_size, 3), dtype=np.uint8)
     
     def add_border(tile):
         new_tile = fill_coords(tile, point_in_rect(0, 0.031, 0, 1), (100, 100, 100)) 
@@ -256,5 +266,26 @@ def _make_tile_atlas(tile_size):
     key_tile = fill_coords(key_tile, point_in_triangle(*KEY_TRI_COORDS), [0, 255, 255])
     key_tile = fill_coords(key_tile, point_in_triangle(*(KEY_TRI_COORDS+jnp.array([0, 0.4]))), [0, 255, 255])
     atlas[11] = key_tile
-    
+
+    # Box
+    BORDER_WIDTH = 0.1
+    box_tile = np.tile([0, 0, 0], (tile_size, tile_size, 1))
+    box_tile = fill_coords(box_tile, point_in_rect(0, BORDER_WIDTH, 0, 1), (255, 255, 0))
+    box_tile = fill_coords(box_tile, point_in_rect(1-BORDER_WIDTH, 1, 0, 1), (255, 255, 0))
+    box_tile = fill_coords(box_tile, point_in_rect(0, 1, 0, BORDER_WIDTH), (255, 255, 0))
+    box_tile = fill_coords(box_tile, point_in_rect(0, 1, 1-BORDER_WIDTH, 1), (255, 255, 0))
+
+    CENTRE_WIDTH = 0.15
+    box_tile = fill_coords(box_tile, point_in_rect(0.5-CENTRE_WIDTH/2, 0.5+CENTRE_WIDTH/2, 0, 1), (255, 255, 0))
+    box_tile = fill_coords(box_tile, point_in_rect(0, 1, 0.5-CENTRE_WIDTH/2, 0.5+CENTRE_WIDTH/2), (255, 255, 0))
+    atlas[12] = box_tile
+
+    atlas[13] = box_tile/2
+
+    # Box Goal Tile
+    SQUARE_SIZE = 0.4
+    box_goal_tile = np.tile([0, 0, 0], (tile_size, tile_size, 1))
+    box_goal_tile = fill_coords(box_goal_tile, point_in_rect(0.5-SQUARE_SIZE/2, 0.5+SQUARE_SIZE/2, 0.5-SQUARE_SIZE/2, 0.5+SQUARE_SIZE/2), (255, 255, 0))
+    atlas[14] = box_goal_tile
+
     return atlas

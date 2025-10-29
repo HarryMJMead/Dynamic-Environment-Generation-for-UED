@@ -6,6 +6,8 @@ defaults:
 
 # === Env ===
 set_init_pos: True
+max_height: 13
+max_width: 13
 
 # === PPO === 
 num_updates: 30000
@@ -13,8 +15,7 @@ num_env_steps: null
 num_train_envs: 256
 # === Student hyperparams ===
 student_num_steps: 512
-student_anneal_lr: True
-student_lr: 5e-4
+student_lr: 2.4e-4
 student_max_grad_norm: 0.5
 student_num_minibatches: 4
 student_gamma: 0.995
@@ -27,7 +28,6 @@ student_critic_coeff: 0.5
 adv_random_z_dimension: 16
 adv_zero_out_random_z: False
 adv_num_steps: 60
-adv_anneal_lr: True
 adv_lr: 1e-3
 adv_max_grad_norm: 0.5
 adv_num_minibatches: 4

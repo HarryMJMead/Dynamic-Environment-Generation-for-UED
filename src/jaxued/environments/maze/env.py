@@ -67,11 +67,22 @@ class EnvState:
     time: int
     terminal: bool
     goal_placed: chex.Array
+
+    # Door and Key Requirements
     has_key: chex.Array = jnp.array(False, dtype=jnp.bool_)
     key_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
     key_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
     door_pos: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
     door_placed: chex.Array = jnp.array(0, dtype=jnp.uint8)
+    
+    # Sokoban Requirements
+    box_map: chex.Array = jnp.array([[0]], dtype=jnp.bool_)
+    box_goal_map: chex.Array = jnp.array([[0]], dtype=jnp.bool_)
+    observation_map: chex.Array = jnp.array([[0]], dtype=jnp.uint8)
+    max_boxes: int = 0
+    box_map_reset: chex.Array = jnp.array([[0]], dtype=jnp.bool_)
+    agent_pos_reset: chex.Array = jnp.array([0, 0], dtype=jnp.uint32)
+    agent_dir_reset: chex.Array = jnp.array(0, dtype=jnp.uint8)
 
 @struct.dataclass
 class Observation:
@@ -119,6 +130,7 @@ class Maze(UnderspecifiedEnv):
         self.fully_obs = fully_obs
         self.penalize_time = penalize_time
         self.key_reward = key_reward
+        self.show_boxes = False
 
     @property
     def default_params(self) -> EnvParams:
@@ -133,7 +145,7 @@ class Maze(UnderspecifiedEnv):
     ) -> Tuple[Observation, EnvState, float, bool, dict]:
         """Perform single timestep state transition."""
         state, reward = self._step_agent(rng, state, action, params)
-        maze_map = make_maze_map(state, self.agent_view_size-1)
+        maze_map = make_maze_map(state, self.agent_view_size-1, show_boxes=self.show_boxes)
         # Check game condition & no. steps for termination condition
         state = state.replace(time=state.time + 1, maze_map=maze_map)
         done = self.is_terminal(state, params)
@@ -162,13 +174,16 @@ class Maze(UnderspecifiedEnv):
     # ===
     
     def init_state_from_level(self, level: Level) -> EnvState:
-        maze_map = make_maze_map(level, self.agent_view_size-1)
+        maze_map = make_maze_map(level, self.agent_view_size-1, show_boxes=self.show_boxes)
         return EnvState(
             agent_pos=jnp.array(level.agent_pos, dtype=jnp.uint32),
             agent_dir=jnp.array(level.agent_dir, dtype=jnp.uint8),
             goal_pos=jnp.array(level.goal_pos, dtype=jnp.uint32),
             goal_placed=jnp.array(level.goal_placed, dtype=jnp.bool_),
             wall_map=jnp.array(level.wall_map, dtype=jnp.bool_),
+            box_map=jnp.array(level.box_map, dtype=jnp.bool_),
+            box_goal_map=jnp.array(level.box_goal_map, dtype=jnp.bool_),
+            max_boxes=jnp.array(level.max_boxes, dtype=jnp.uint32),
             maze_map=maze_map,
             time=0,
             terminal=False,
@@ -179,9 +194,12 @@ class Maze(UnderspecifiedEnv):
         )
     
     def update_state_from_level(self, level: Level, state: EnvState) -> EnvState:
-        maze_map = make_maze_map(level, self.agent_view_size-1)
+        maze_map = make_maze_map(level, self.agent_view_size-1, show_boxes=self.show_boxes)
         state = state.replace(
             wall_map=jnp.array(level.wall_map, dtype=jnp.bool_),
+            box_map=jnp.array(level.box_map, dtype=jnp.bool_),
+            box_goal_map=jnp.array(level.box_goal_map, dtype=jnp.bool_),
+            max_boxes=jnp.array(level.max_boxes, dtype=jnp.uint32),
             maze_map=maze_map,
             goal_pos=jnp.array(level.goal_pos, dtype=jnp.uint32),
             goal_placed=jnp.array(level.goal_placed, dtype=jnp.bool_),
@@ -333,6 +351,7 @@ def make_maze_map(
     level: Level,
     padding=0,
     ignore_goal=False,
+    show_boxes=False,
 ) -> chex.Array:
     """This function is used internally in this class, and it creates a single array map of the entire level. This includes walls, the goal but not the agent.
 
@@ -349,6 +368,17 @@ def make_maze_map(
     wall = jnp.array([OBJECT_TO_INDEX['wall'], COLOR_TO_INDEX['grey'], 0], dtype=jnp.uint8)
     maze_map = jnp.array(jnp.expand_dims(level.wall_map, -1), dtype=jnp.uint8)
     maze_map = jnp.where(maze_map > 0, wall, empty)
+
+    box = jnp.array([OBJECT_TO_INDEX['box'], COLOR_TO_INDEX['yellow'], 0], dtype=jnp.uint8)
+    box_goal = jnp.array([OBJECT_TO_INDEX['box'], COLOR_TO_INDEX['green'], 0], dtype=jnp.uint8)
+    box_complete = jnp.array([OBJECT_TO_INDEX['box'], COLOR_TO_INDEX['purple'], 0], dtype=jnp.uint8)
+    if show_boxes:
+        box_map = jnp.array(jnp.expand_dims(level.box_map, -1), dtype=jnp.uint8)
+        box_goal_map = jnp.array(jnp.expand_dims(level.box_goal_map, -1), dtype=jnp.uint8)
+        box_complete_map = jnp.array(jnp.expand_dims(jnp.logical_and(level.box_map, level.box_goal_map), -1), dtype=jnp.uint8)
+        maze_map = jnp.where(box_map > 0, box, maze_map)
+        maze_map = jnp.where(box_goal_map > 0, box_goal, maze_map)
+        maze_map = jnp.where(box_complete_map > 0, box_complete, maze_map)
 
     goal = jnp.array([OBJECT_TO_INDEX['goal'], COLOR_TO_INDEX['green'], 0], dtype=jnp.uint8)
     goal_x,goal_y = level.goal_pos

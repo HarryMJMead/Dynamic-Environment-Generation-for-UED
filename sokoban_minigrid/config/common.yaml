@@ -1,0 +1,42 @@
+project: sokoban_minigrid_UED_Checkpoint
+run_name: None
+seed: 1
+# === Train vs Eval ===
+mode: train
+checkpoint_directory: None
+checkpoint_to_eval: -1
+# === CHECKPOINTING ===
+checkpoint_save_interval: -1
+max_number_of_checkpoints: 5
+# === EVAL ===
+eval_freq: 100
+eval_num_attempts: 10
+eval_levels: [
+    "Sokoban_Jr_1_01",
+    "Sokoban_Jr_1_02",
+    "Sokoban_Jr_1_03",
+    "Sokoban_Jr_1_04",
+    "Sokoban_Jr_1_05",
+    "Sokoban_Jr_1_06",
+    "Sokoban_Jr_1_07",
+    "Sokoban_Jr_1_08",
+    "Sokoban_Jr_1_09",
+    "Sokoban_Jr_1_12",
+    "Sokoban_Jr_1_15",
+    "Sokoban_Jr_1_16",
+    "Sokoban_Jr_1_17",
+    "Sokoban_Jr_1_18",
+    "Sokoban_Jr_1_19",
+    "Sokoban_Jr_1_20",
+    "Sokoban_Jr_1_21",
+    "Sokoban_Jr_1_22",
+    "Sokoban_Jr_1_23",
+    "Sokoban_Jr_1_24",
+]
+
+# === ENV CONFIG ===
+agent_view_size: 5
+
+# === WandB ===
+group: DEGen
+log_animations: False

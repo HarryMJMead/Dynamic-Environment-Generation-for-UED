@@ -657,7 +657,7 @@ class AdversaryActorCritic(nn.Module):
 # region checkpointing
 def setup_checkpointing(config: dict, train_state: TrainState, env: UnderspecifiedEnv, env_params: EnvParams) -> ocp.CheckpointManager:
     """This takes in the train state and config, and returns an orbax checkpoint manager.
-        It also saves the config in `checkpoints/run_name/seed/config.json`
+        It also saves the config in `checkpoints/group/run_name/seed/config.json`
 
     Args:
         config (dict): 
@@ -668,7 +668,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), "obs_generation/checkpoints", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}", str(config['seed']))
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
@@ -695,6 +695,9 @@ def main(config=None, project="JAXUED_TEST"):
     
     tags = ["obs_gen", "local", "NVL", "unsolvable_penalty"]
     run = wandb.init(config=wandb_config, project=project, tags=tags, group=config['group'])
+
+    # Match Config Run name and WandB run name
+    config['run_name'] = run.name
     
     wandb.define_metric("num_updates")
     wandb.define_metric("num_env_steps")
@@ -743,19 +746,20 @@ def main(config=None, project="JAXUED_TEST"):
     
         log_dict.update({f"images/levels": [wandb.Image(np.array(image), caption=make_caption(i)) for i, image in enumerate(stats["levels"][:32])]})
 
-        # generation animations
-        animations = []
-        for i in range(8):
-            frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
-            frames = np.array(frames[:episode_length])
-            animations.append(wandb.Video(frames, fps=4))
-        log_dict.update({f"images/level_animations": animations})
+        if config["log_animations"]:
+            # generation animations
+            animations = []
+            for i in range(8):
+                frames, episode_length = stats["animated_levels"][0][:, i], stats["animated_levels"][1][i]
+                frames = np.array(frames[:episode_length])
+                animations.append(wandb.Video(frames, fps=4))
+            log_dict.update({f"images/level_animations": animations})
 
-        # animations
-        for i, level_name in enumerate(config["eval_levels"]):
-            frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
-            frames = np.array(frames[:episode_length])
-            log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
+            # animations
+            for i, level_name in enumerate(config["eval_levels"]):
+                frames, episode_length = stats["eval_animation"][0][:, i], stats["eval_animation"][1][i]
+                frames = np.array(frames[:episode_length])
+                log_dict.update({f"animations/{level_name}": wandb.Video(frames, fps=4)})
         
         wandb.log(log_dict)
     
@@ -1115,7 +1119,7 @@ def main(config=None, project="JAXUED_TEST"):
         metrics['time_delta'] = curr_time - start_time
         log_eval(metrics)
         if config["checkpoint_save_interval"] > 0:
-            checkpoint_manager.save(eval_step, args=ocp.args.StandardSave(runner_state[1]))
+            checkpoint_manager.save(int(metrics['update_count']), args=ocp.args.StandardSave(runner_state[1]))
             #checkpoint_manager.wait_until_finished()
     return runner_state[1]
 
