@@ -166,6 +166,7 @@ results
 outputs
 hydra_examples/multirun/
 run_script.py
+env_testing/
 
 #docker stuff
 .config/
