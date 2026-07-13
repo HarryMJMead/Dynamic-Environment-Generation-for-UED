@@ -157,7 +157,7 @@ def sample_trajectories(
 
     rng, rng_adv, rng_pro = jax.random.split(rng, 3)
     adv_init_obs, adv_init_env_state = jax.vmap(adv_env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_adv, num_envs), init_levels, adv_env_params)
-    pro_init_obs, pro_init_env_state =  jax.tree_map(lambda x: x.repeat(num_pro_traj, axis=0), jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_pro, num_envs), adv_init_env_state.level, env_params))
+    pro_init_obs, pro_init_env_state =  jax.tree_util.tree_map(lambda x: x.repeat(num_pro_traj, axis=0), jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_pro, num_envs), adv_init_env_state.level, env_params))
 
     # Replace Carry
     def replace_carry(new, old, new_carry):
@@ -169,7 +169,7 @@ def sample_trajectories(
         hstate, obs, env_state, last_done, total_steps, _ = carry
         rng, rng_action, rng_step = jax.random.split(rng, 3)
 
-        x = jax.tree_map(lambda x: x[None, ...], (obs, last_done))
+        x = jax.tree_util.tree_map(lambda x: x[None, ...], (obs, last_done))
         hstate, pi, value = train_state.apply_fn(train_state.params, x, hstate)
         action = pi.sample(seed=rng_action)
         log_prob = pi.log_prob(action)
@@ -203,20 +203,20 @@ def sample_trajectories(
         
         # Replace Adv Carry where necessary
         take_either_step = jnp.logical_or(take_adv_step, take_pro_step.reshape(num_envs, num_pro_traj).any(axis=1))
-        next_adv_hstate, _, next_adv_env_state, next_adv_last_done, next_adv_steps, next_adv_value = jax.tree_map(Partial(replace_carry, new_carry=take_either_step), next_adv_carry, adv_carry)
-        next_adv_env_state = jax.tree_map(Partial(replace_carry, new_carry=take_adv_step), next_adv_env_state, adv_carry[2])
+        next_adv_hstate, _, next_adv_env_state, next_adv_last_done, next_adv_steps, next_adv_value = jax.tree_util.tree_map(Partial(replace_carry, new_carry=take_either_step), next_adv_carry, adv_carry)
+        next_adv_env_state = jax.tree_util.tree_map(Partial(replace_carry, new_carry=take_adv_step), next_adv_env_state, adv_carry[2])
 
         def student_step(rng, train_state, carry, num_traj, take_step, not_done):
             # Update student envs
             hstate, obs, env_state, last_done, steps, last_value = carry
-            repeated_levels = jax.tree_map(lambda x: x.repeat(num_traj, axis=0), next_adv_env_state.level)
+            repeated_levels = jax.tree_util.tree_map(lambda x: x.repeat(num_traj, axis=0), next_adv_env_state.level)
             obs, env_state = jax.vmap(env.update_state_from_level, in_axes=(0, 0))(repeated_levels, env_state)
             carry = hstate, obs, env_state, last_done, steps, last_value
             location = jnp.concatenate([env_state.env_state.has_key[:, None], env_state.env_state.agent_dir[:, None], env_state.env_state.agent_pos], axis=-1)
 
             # Take Pro Step
             rng, next_carry, traj = sample_agent_step(rng, train_state, env, num_envs*num_traj, carry)
-            next_carry = jax.tree_map(Partial(replace_carry, new_carry=take_step), next_carry, carry)
+            next_carry = jax.tree_util.tree_map(Partial(replace_carry, new_carry=take_step), next_carry, carry)
             #not_done = jnp.logical_and(not_done, ~jnp.logical_and(traj[3], take_step)) #add this back for single traj
 
             # Update adv obs
@@ -286,7 +286,7 @@ def sample_trajectories(
 
     def get_last_value(train_state, carry):
         hstate, last_obs, _, last_done, _, _ = carry
-        x = jax.tree_map(lambda x: x[None, ...], (last_obs, last_done))
+        x = jax.tree_util.tree_map(lambda x: x[None, ...], (last_obs, last_done))
         _, _, last_value = train_state.apply_fn(train_state.params, x, hstate)
         return last_value
 
@@ -294,11 +294,11 @@ def sample_trajectories(
     last_pro_env_state = pro_carry[2]
     last_pro_location = jnp.concatenate([last_pro_env_state.env_state.has_key[:, None], last_pro_env_state.env_state.agent_dir[:, None], last_pro_env_state.env_state.agent_pos], axis=-1)
 
-    (pro_traj, pro_locations) = jax.tree_map(lambda x: x[pro_traj_idxs, jnp.arange(num_pro_envs)], (full_pro_traj, full_pro_locations))
+    (pro_traj, pro_locations) = jax.tree_util.tree_map(lambda x: x[pro_traj_idxs, jnp.arange(num_pro_envs)], (full_pro_traj, full_pro_locations))
 
     student_traj_idxs = pro_traj_idxs.reshape(-1, num_envs, num_pro_traj)
     student_adv_idxs = full_student_adv_idxs[student_traj_idxs.min(axis=2), jnp.arange(num_envs)]
-    student_adv_env_states = jax.tree_map(lambda x : x[student_traj_idxs.min(axis=2), jnp.arange(num_envs)], full_student_adv_env_states)
+    student_adv_env_states = jax.tree_util.tree_map(lambda x : x[student_traj_idxs.min(axis=2), jnp.arange(num_envs)], full_student_adv_env_states)
 
     return rng, (pro_carry, adv_carry), (pro_traj, full_adv_traj), last_values, jnp.concatenate([pro_locations, last_pro_location[None, ...]], axis=0), student_adv_idxs, student_adv_env_states
 
@@ -333,7 +333,7 @@ def sample_trajectories_rnn(
         rng, train_state, hstate, obs, env_state, last_done = carry
         rng, rng_action, rng_step = jax.random.split(rng, 3)
 
-        x = jax.tree_map(lambda x: x[None, ...], (obs, last_done))
+        x = jax.tree_util.tree_map(lambda x: x[None, ...], (obs, last_done))
         hstate, pi, value = train_state.apply_fn(train_state.params, x, hstate)
         action = pi.sample(seed=rng_action)
         log_prob = pi.log_prob(action)
@@ -365,7 +365,7 @@ def sample_trajectories_rnn(
         length=max_episode_length,
     )
 
-    x = jax.tree_map(lambda x: x[None, ...], (last_obs, last_done))
+    x = jax.tree_util.tree_map(lambda x: x[None, ...], (last_obs, last_done))
     _, _, last_value = train_state.apply_fn(train_state.params, x, hstate)
     last_location = jnp.concatenate([last_env_state.env_state.has_key[:, None], last_env_state.env_state.agent_dir[:, None], last_env_state.env_state.agent_pos], axis=-1)
 
@@ -402,7 +402,7 @@ def evaluate_rnn(
         rng, hstate, obs, state, done, mask, episode_length = carry
         rng, rng_action, rng_step = jax.random.split(rng, 3)
 
-        x = jax.tree_map(lambda x: x[None, ...], (obs, done))
+        x = jax.tree_util.tree_map(lambda x: x[None, ...], (obs, done))
         hstate, pi, _ = train_state.apply_fn(train_state.params, x, hstate)
         action = pi.sample(seed=rng_action).squeeze(0)
 
@@ -508,12 +508,12 @@ def update_actor_critic_rnn(
         rng, rng_perm = jax.random.split(rng)
         permutation = jax.random.permutation(rng_perm, num_envs)
         minibatches = (
-            jax.tree_map(
+            jax.tree_util.tree_map(
                 lambda x: jnp.take(x, permutation, axis=0)
                 .reshape(n_minibatch, -1, *x.shape[1:]),
                 init_hstate,
             ),
-            *jax.tree_map(
+            *jax.tree_util.tree_map(
                 lambda x: jnp.take(x, permutation, axis=1)
                 .reshape(x.shape[0], n_minibatch, -1, *x.shape[2:])
                 .swapaxes(0, 1),
@@ -859,7 +859,7 @@ def main(config=None, project="JAXUED_TEST"):
                 )
                 return config[f"{prefix}lr"] * frac
             obs, _ = env.reset_to_level(rng, sample_empty_level(), env_params)
-            obs = jax.tree_map(
+            obs = jax.tree_util.tree_map(
                 lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
                 obs,
             )
@@ -1027,8 +1027,8 @@ def main(config=None, project="JAXUED_TEST"):
         episode_lengths = pro_carry[4].reshape(config['num_train_envs'], config['num_pro_traj']).max(axis=1)
 
         metrics = {
-            "pro_losses": jax.tree_map(lambda x: x.mean(), pro_losses),
-            "adv_losses": jax.tree_map(lambda x: x.mean(), adv_losses),
+            "pro_losses": jax.tree_util.tree_map(lambda x: x.mean(), pro_losses),
+            "adv_losses": jax.tree_util.tree_map(lambda x: x.mean(), adv_losses),
             "mean_num_blocks": levels.wall_map.sum() / config["num_train_envs"],
             "pro_returns": pro_mean_returns,
             "adv_returns":   rewards.sum(axis=0),
@@ -1078,11 +1078,11 @@ def main(config=None, project="JAXUED_TEST"):
         eval_returns = cum_rewards.mean(axis=0) # (num_eval_levels,)
         
         # just grab the first run
-        states, episode_lengths = jax.tree_map(lambda x: x[0], (states, episode_lengths)) # (num_steps, num_eval_levels, ...), (num_eval_levels,)
+        states, episode_lengths = jax.tree_util.tree_map(lambda x: x[0], (states, episode_lengths)) # (num_steps, num_eval_levels, ...), (num_eval_levels,)
         images = jax.vmap(jax.vmap(eval_env_renderer.render_state, (0, None)), (0, None))(states, eval_env_params) # (num_steps, num_eval_levels, ...)
         frames = images.transpose(0, 1, 4, 2, 3) # WandB expects color channel before image dimensions when dealing with animations for some reason
         
-        level_states, level_ep_lengths = jax.tree_map(lambda x: x[-1], metrics["animated_levels"])
+        level_states, level_ep_lengths = jax.tree_util.tree_map(lambda x: x[-1], metrics["animated_levels"])
         level_images = jax.vmap(jax.vmap(ani_adv_env_renderer.render_state, (0, None)), (0, None))(level_states, adv_env_params)
         level_frames = level_images.transpose(0, 1, 4, 2, 3)
 
@@ -1091,7 +1091,7 @@ def main(config=None, project="JAXUED_TEST"):
         metrics["eval_solve_rates"] = eval_solve_rates
         metrics["eval_ep_lengths"]  = episode_lengths
         metrics["eval_animation"] = (frames, episode_lengths)
-        metrics["levels"] = jax.vmap(adv_env_renderer.render_level, (0, None))(jax.tree_map(lambda x: x[-1], metrics["levels"]), env_params)
+        metrics["levels"] = jax.vmap(adv_env_renderer.render_level, (0, None))(jax.tree_util.tree_map(lambda x: x[-1], metrics["levels"]), env_params)
         metrics["animated_levels"] = (level_frames, level_ep_lengths)
 
         return (rng, train_state), metrics

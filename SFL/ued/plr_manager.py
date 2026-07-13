@@ -100,7 +100,7 @@ class PLRManager:
         
         @partial(jax.vmap, in_axes=(0, 0, 0, 0, 0))
         def select_level(d, maps, poses, new_maps, new_poses):
-            return jax.tree_map(lambda x, y: jax.lax.select(d, x, y), (maps, poses), (new_maps, new_poses))
+            return jax.tree_util.tree_map(lambda x, y: jax.lax.select(d, x, y), (maps, poses), (new_maps, new_poses))
         
         key_d, key_n, key_s = jax.random.split(key, 3)
 
@@ -145,7 +145,7 @@ class PLRManager:
             count = jax.lax.select(update_score, old[2] + 1, 1)  # either update score or set to 1 if new level
 
             new = (maps[env_idx], poses[env_idx], count, regret[env_idx], step, metrics[env_idx], max_returns[env_idx])
-            case = jax.tree_map(lambda x, y: jax.lax.select(replace, x, y), new, old)
+            case = jax.tree_util.tree_map(lambda x, y: jax.lax.select(replace, x, y), new, old)
 
             map_buffer = self.map_buffer_manager.replace_idx(map_buffer, get_idx, *case)
             #u_p = jnp.unique(map_buffer["poses"], axis=0)

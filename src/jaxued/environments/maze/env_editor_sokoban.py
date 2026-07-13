@@ -91,7 +91,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
         obs_map = jnp.moveaxis(obs_map, 0, -1)
         box_map = jnp.moveaxis(box_map, 0, -1)
-        action_mask = jax.tree_map(lambda x: x.flatten(), action_mask)
+        action_mask = jax.tree_util.tree_map(lambda x: x.flatten(), action_mask)
 
         if self.set_start:
             action_mask = jax.lax.select(state.time <= 2, self.agent_placement_action_mask(state.time), action_mask)
@@ -131,7 +131,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
         obs_map = jnp.moveaxis(obs_map, 0, -1)
         box_map = jnp.moveaxis(box_map, 0, -1)
-        action_mask = jax.tree_map(lambda x: x.flatten(), action_mask)
+        action_mask = jax.tree_util.tree_map(lambda x: x.flatten(), action_mask)
 
         if self.set_start:
             action_mask = jax.lax.select(state.time <= 2, self.agent_placement_action_mask(state.time), action_mask)
@@ -287,7 +287,7 @@ class LocalSokobanMazeEditor(LocalMazeEditor):
                 lambda: jax.lax.switch(edit_goal, [toggle_wall, toggle_box, toggle_box_goal, toggle_filled_box_goal, increase_max_boxes])
             ])
 
-            state = jax.tree_map(
+            state = jax.tree_util.tree_map(
                 lambda x, y: jax.lax.select(edit_time <= 2, x, y),
                 set_agent_locs(),
                 state
@@ -305,7 +305,7 @@ class LocalSokobanMazeEditorRotate(LocalSokobanMazeEditor):
                    (agent_dir == 3)*jnp.rot90(arr, 4)
         
         obs, obs_map, box_map, _ = super().get_agent_obs(agent_pos, agent_dir, box_map, level, maze_map, has_reset, include_agent)    
-        obs, obs_map, box_map = jax.tree_map(rotate, (obs, obs_map, box_map))
+        obs, obs_map, box_map = jax.tree_util.tree_map(rotate, (obs, obs_map, box_map))
         total_boxes = level.box_map.sum()
         total_box_goals = level.box_goal_map.sum()
         action_mask = jnp.concatenate([~obs_map.flatten()]*2 + 

@@ -181,4 +181,7 @@ env_testing/
 .netrc
 .bash_history
 multirun/
+conda-config.yaml
+*.out
+*.sh
 

@@ -106,7 +106,7 @@ class MazeEditor(UnderspecifiedEnv):
     ) -> Tuple[Observation, EnvState, float, bool, dict]:
         # Do not edit level if in terminal state
         rng, rng_obs = jax.random.split(rng)
-        new_level = jax.tree_map(
+        new_level = jax.tree_util.tree_map(
             lambda x, y: jax.lax.select(state.terminal, x, y),
             state.level,
             self._edit_level(rng, state, action, params)
@@ -463,7 +463,7 @@ class LocalMazeEditor(MazeEditor):
     ) -> Tuple[Observation, EnvState, float, bool, dict]:
         # Do not edit level if in terminal state
         rng, rng_obs = jax.random.split(rng)
-        new_state = jax.tree_map(
+        new_state = jax.tree_util.tree_map(
             lambda x, y: jax.lax.select(state.terminal, x, y),
             state,
             self._edit_level(rng, state, action, params)
@@ -526,7 +526,7 @@ class LocalMazeEditor(MazeEditor):
         image = jnp.where(not_done.reshape(-1, 1, 1, 1), image, finished_image)
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
         obs_map = jnp.moveaxis(obs_map, 0, -1)
-        action_mask = jax.tree_map(lambda x: x.flatten(), action_mask)
+        action_mask = jax.tree_util.tree_map(lambda x: x.flatten(), action_mask)
 
         if self.set_start:
             action_mask = jax.lax.select(state.time <= 2, self.agent_placement_action_mask(state.time), action_mask)
@@ -561,7 +561,7 @@ class LocalMazeEditor(MazeEditor):
         image, obs_map, action_mask = jax.vmap(self.get_agent_obs, in_axes=(0, 0, None, None))(state.agent_locs, state.agent_dirs, state.level, maze_map_with_agent)
         image = jnp.moveaxis(image, 0, -2).reshape(self.agent_view_size, self.agent_view_size, 3*self.num_agents)
         obs_map = jnp.moveaxis(obs_map, 0, -1)
-        action_mask = jax.tree_map(lambda x: x.flatten(), action_mask)
+        action_mask = jax.tree_util.tree_map(lambda x: x.flatten(), action_mask)
 
         if self.set_start:
             action_mask = jax.lax.select(state.time <= 2, self.agent_placement_action_mask(state.time), action_mask)
@@ -651,7 +651,7 @@ class LocalMazeEditor(MazeEditor):
                 lambda: jax.lax.switch(edit_goal, [toggle_wall, move_goal])
             ])
 
-            state = jax.tree_map(
+            state = jax.tree_util.tree_map(
                 lambda x, y: jax.lax.select(edit_time <= 2, x, y),
                 set_agent_locs(),
                 state
@@ -670,7 +670,7 @@ class LocalMazeEditorRotate(LocalMazeEditor):
                    (agent_dir == 3)*jnp.rot90(arr, 4)
         
         obs, obs_map, _ = super().get_agent_obs(agent_pos, agent_dir, level, maze_map, include_agent)    
-        obs, obs_map = jax.tree_map(rotate, (obs, obs_map))
+        obs, obs_map = jax.tree_util.tree_map(rotate, (obs, obs_map))
         action_mask = jnp.concatenate([~obs_map.flatten()]*2 + [jnp.logical_and(~obs_map.flatten(), ~level.goal_placed)])
         return obs, obs_map, action_mask
     
@@ -861,7 +861,7 @@ class LocalKeyMazeEditor(LocalMazeEditor):
                 lambda: jax.lax.switch(edit_goal, [toggle_wall, move_goal, move_key, move_door])
             ])
 
-            state = jax.tree_map(
+            state = jax.tree_util.tree_map(
                 lambda x, y: jax.lax.select(edit_time <= 2, x, y),
                 set_agent_locs(),
                 state
@@ -880,7 +880,7 @@ class LocalKeyMazeEditorRotate(LocalKeyMazeEditor):
                    (agent_dir == 3)*jnp.rot90(arr, 4)
         
         obs, obs_map, _ = super().get_agent_obs(agent_pos, agent_dir, level, maze_map, include_agent)    
-        obs, obs_map = jax.tree_map(rotate, (obs, obs_map))
+        obs, obs_map = jax.tree_util.tree_map(rotate, (obs, obs_map))
         action_mask = jnp.concatenate([~obs_map.flatten()]*2 + [jnp.logical_and(~obs_map.flatten(), ~level.goal_placed)] + [jnp.logical_and(~obs_map.flatten(), level.key_placed==0)] + [jnp.logical_and(~obs_map.flatten(), level.door_placed==0)])
         return obs, obs_map, action_mask
     
@@ -972,7 +972,7 @@ class BernoulliMazeEditor(UnderspecifiedEnv):
     ) -> Tuple[Observation, EnvState, float, bool, dict]:
         # Do not edit level if in terminal state
         rng, rng_obs = jax.random.split(rng)
-        new_level = jax.tree_map(
+        new_level = jax.tree_util.tree_map(
             lambda x, y: jax.lax.select(state.terminal, x, y),
             state.level,
             self._edit_level(rng, state, action, params)
