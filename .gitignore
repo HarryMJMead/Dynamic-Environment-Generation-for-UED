@@ -185,3 +185,6 @@ conda-config.yaml
 *.out
 *.sh
 
+.profile
+.codex/
+.copilot/

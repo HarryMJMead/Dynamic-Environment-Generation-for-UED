@@ -25,3 +25,7 @@ n_walls: 15
 n_boxes: 10
 max_height: 9
 max_width: 9
+
+# Fixed ACCEL/PLR level sources; empty keeps random generation.
+# Each entry: {directory: checkpoints/group/run/seed, step: -1}
+level_checkpoints: []

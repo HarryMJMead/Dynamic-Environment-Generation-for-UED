@@ -24,6 +24,8 @@ import logging
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+from .checkpoint_levels import make_checkpoint_level_sampler
+
 logger = logging.getLogger(__name__)
 
 
@@ -342,7 +344,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     
     # save the config
     with open(os.path.join(overall_save_dir, 'config.json'), 'w+') as f:
-        f.write(json.dumps(config.as_dict(), indent=True))
+        f.write(json.dumps(OmegaConf.to_container(config, resolve=True), indent=True))
 
     checkpoint_manager = ocp.CheckpointManager(
         os.path.join(overall_save_dir, 'models'),
@@ -363,6 +365,18 @@ def compute_score(config, dones, values, max_returns, advantages):
         raise ValueError(f"Unknown score function: {config['score_function']}")
 
 def main(config=None, project="JAXUED_TEST"):
+    # Resolve the fixed pool before tracing or starting the logging run.
+    resolved_sources = []
+    if config['mode'] != 'eval' and config.get('level_checkpoints', []):
+        base_directory = hydra.utils.get_original_cwd() if hydra.core.hydra_config.HydraConfig.initialized() else os.getcwd()
+        sample_level, resolved_sources = make_checkpoint_level_sampler(
+            config['level_checkpoints'], base_directory,
+        )
+    else:
+        sample_level = make_level_sokoban_generator(
+            config['max_height'], config['max_width'], config['n_walls'], config['n_boxes'],
+        )
+    OmegaConf.update(config, 'resolved_level_checkpoints', resolved_sources, force_add=True)
     wandb_config = OmegaConf.to_container(
             config, resolve=True, throw_on_missing=False
         )
@@ -425,10 +439,9 @@ def main(config=None, project="JAXUED_TEST"):
     # Setup the environment
     env = SokobanMaze(max_height=config["max_height"], max_width=config["max_width"], agent_view_size=config["agent_view_size"], normalize_obs=True)
     eval_env = SokobanMaze(max_height=13, max_width=13, agent_view_size=config["agent_view_size"], normalize_obs=True)
-    sample_random_level = make_level_sokoban_generator(env.max_height, env.max_width, config["n_walls"], config['n_boxes'])
     env_renderer = MazeRenderer(env, tile_size=8, render_boxes=True)
     eval_env_renderer = MazeRenderer(eval_env, tile_size=8, render_boxes=True)
-    env = AutoResetWrapper(env, sample_random_level)
+    env = AutoResetWrapper(env, sample_level)
     env_params = env.default_params
     
     @jax.jit
@@ -441,7 +454,7 @@ def main(config=None, project="JAXUED_TEST"):
                 / config["num_updates"]
             )
             return config["lr"] * frac
-        obs, _ = env.reset_to_level(rng, sample_random_level(rng), env_params)
+        obs, _ = env.reset_to_level(rng, sample_level(rng), env_params)
         obs = jax.tree_util.tree_map(
             lambda x: jnp.repeat(jnp.repeat(x[None, ...], config["num_train_envs"], axis=0)[None, ...], 256, axis=0),
             obs,
@@ -459,7 +472,7 @@ def main(config=None, project="JAXUED_TEST"):
         )
     
         rng_levels, rng_reset = jax.random.split(rng)
-        new_levels = jax.vmap(sample_random_level)(jax.random.split(rng_levels, config["num_train_envs"]))
+        new_levels = jax.vmap(sample_level)(jax.random.split(rng_levels, config["num_train_envs"]))
         init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_reset, config["num_train_envs"]), new_levels, env_params)
         
         return TrainState.create(
