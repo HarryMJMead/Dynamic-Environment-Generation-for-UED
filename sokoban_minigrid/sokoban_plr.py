@@ -454,7 +454,7 @@ def setup_checkpointing(config: dict, train_state: TrainState, env: Underspecifi
     Returns:
         ocp.CheckpointManager: 
     """
-    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}", str(config['seed']))
+    overall_save_dir = os.path.join(os.getcwd(), f"checkpoints/{config['group']}", f"{config['run_name']}")
     os.makedirs(overall_save_dir, exist_ok=True)
     
     # save the config
