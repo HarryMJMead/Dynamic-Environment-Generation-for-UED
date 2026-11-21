@@ -18,6 +18,7 @@ from jaxued.linen import ResetRNN
 from jaxued.environments import SokobanMaze, MazeRenderer
 from jaxued.environments.maze import ObservedLevel, make_level_sokoban_generator, make_level_mutator_minimax_sokoban
 from jaxued.level_sampler import LevelSampler
+from jaxued.pace_scoring import compute_pace_score
 from jaxued.utils import compute_max_mean_returns_epcount, max_mc, positive_value_loss, negative_value_loss, negative_value_loss_solved, negative_value_loss_solved_sum
 from jaxued.wrappers import AutoReplayWrapper
 import chex
@@ -503,8 +504,16 @@ def train_state_to_log_dict(train_state: TrainState, level_sampler: LevelSampler
         }
     }
 
-def compute_score(config, dones, values, max_returns, advantages):
-    if config['score_function'] == "MaxMC":
+def compute_score(config, dones, values, max_returns, advantages, *,
+                  train_state=None, obs=None, actions=None, init_hstate=None):
+    if config['score_function'] == "pace":
+        # Rollouts start from freshly reset environments. Later reset flags
+        # describe the preceding transition, as in the PPO policy forward pass.
+        last_dones = jnp.roll(dones, 1, axis=0).at[0].set(False)
+        return compute_pace_score(
+            train_state, advantages, obs, actions, last_dones, init_hstate
+        )
+    elif config['score_function'] == "MaxMC":
         return max_mc(dones, values, max_returns)
     elif config['score_function'] == "pvl":
         return positive_value_loss(dones, advantages)
@@ -667,6 +676,7 @@ def main(config=None, project="JAXUED_TEST"):
             new_levels = jax.vmap(sample_random_level)(jax.random.split(rng_levels, config["num_train_envs"]))
             init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_reset, config["num_train_envs"]), new_levels, env_params)
             # Rollout
+            init_hstate = ActorCritic.initialize_carry((config["num_train_envs"],))
             (
                 (rng, train_state, hstate, last_obs, last_env_state, last_value),
                 (obs, actions, rewards, dones, log_probs, values, info),
@@ -675,18 +685,21 @@ def main(config=None, project="JAXUED_TEST"):
                 env,
                 env_params,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 init_obs,
                 init_env_state,
                 config["num_train_envs"],
                 config["num_steps"],
             )
-            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=config["clipped_score_advantages"])
+            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=(config["clipped_score_advantages"] and config["score_function"] != "pace"))
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
             max_returns = pro_max_returns
-            scores = compute_score(config, dones, values, max_returns, score_advantages)
+            scores = compute_score(
+                config, dones, values, max_returns, score_advantages,
+                train_state=train_state, obs=obs, actions=actions, init_hstate=init_hstate,
+            )
             sampler, _ = level_sampler.insert_batch(sampler, new_levels, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
@@ -694,7 +707,7 @@ def main(config=None, project="JAXUED_TEST"):
             (rng, train_state), losses = update_actor_critic_rnn(
                 rng,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 (obs, actions, dones, log_probs, values, targets, advantages),
                 config["num_train_envs"],
                 config["num_steps"],
@@ -734,6 +747,7 @@ def main(config=None, project="JAXUED_TEST"):
             rng, rng_levels, rng_reset = jax.random.split(rng, 3)
             sampler, (level_inds, levels) = level_sampler.sample_replay_levels(sampler, rng_levels, config["num_train_envs"])
             init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_reset, config["num_train_envs"]), levels, env_params)
+            init_hstate = ActorCritic.initialize_carry((config["num_train_envs"],))
             (
                 (rng, train_state, hstate, last_obs, last_env_state, last_value),
                 (obs, actions, rewards, dones, log_probs, values, info),
@@ -742,19 +756,22 @@ def main(config=None, project="JAXUED_TEST"):
                 env,
                 env_params,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 init_obs,
                 init_env_state,
                 config["num_train_envs"],
                 config["num_steps"],
             )
-            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=config["clipped_score_advantages"])
+            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=(config["clipped_score_advantages"] and config["score_function"] != "pace"))
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             lvl_extra = level_sampler.get_levels_extra(sampler, level_inds)
             pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
             max_returns = jnp.maximum(lvl_extra["max_return"], pro_max_returns)
-            scores = compute_score(config, dones, values, max_returns, score_advantages)
+            scores = compute_score(
+                config, dones, values, max_returns, score_advantages,
+                train_state=train_state, obs=obs, actions=actions, init_hstate=init_hstate,
+            )
             sampler = level_sampler.update_batch(sampler, level_inds, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
@@ -762,7 +779,7 @@ def main(config=None, project="JAXUED_TEST"):
             (rng, train_state), losses = update_actor_critic_rnn(
                 rng,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 (obs, actions, dones, log_probs, values, targets, advantages),
                 config["num_train_envs"],
                 config["num_steps"],
@@ -806,6 +823,7 @@ def main(config=None, project="JAXUED_TEST"):
             init_obs, init_env_state = jax.vmap(env.reset_to_level, in_axes=(0, 0, None))(jax.random.split(rng_reset, config["num_train_envs"]), child_levels, env_params)
 
             # rollout
+            init_hstate = ActorCritic.initialize_carry((config["num_train_envs"],))
             (
                 (rng, train_state, hstate, last_obs, last_env_state, last_value),
                 (obs, actions, rewards, dones, log_probs, values, info),
@@ -814,18 +832,21 @@ def main(config=None, project="JAXUED_TEST"):
                 env,
                 env_params,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 init_obs,
                 init_env_state,
                 config["num_train_envs"],
                 config["num_steps"],
             )
-            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=config["clipped_score_advantages"])
+            score_advantages, _ = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones, clip_deltas=(config["clipped_score_advantages"] and config["score_function"] != "pace"))
             if config["score_function"] == "mna":
                 score_advantages, _ = compute_clipped_gae(config[f"gamma"], config[f"gae_lambda"], last_value, values, rewards, dones, None, use_max_value=True)
             pro_mean_returns, pro_max_returns, pro_eps = compute_max_mean_returns_epcount(dones, rewards)
             max_returns = pro_max_returns
-            scores = compute_score(config, dones, values, max_returns, score_advantages)
+            scores = compute_score(
+                config, dones, values, max_returns, score_advantages,
+                train_state=train_state, obs=obs, actions=actions, init_hstate=init_hstate,
+            )
             sampler, _ = level_sampler.insert_batch(sampler, child_levels, scores, {"max_return": max_returns})
             
             advantages, targets = compute_gae(config["gamma"], config["gae_lambda"], last_value, values, rewards, dones)
@@ -833,7 +854,7 @@ def main(config=None, project="JAXUED_TEST"):
             (rng, train_state), losses = update_actor_critic_rnn(
                 rng,
                 train_state,
-                ActorCritic.initialize_carry((config["num_train_envs"],)),
+                init_hstate,
                 (obs, actions, dones, log_probs, values, targets, advantages),
                 config["num_train_envs"],
                 config["num_steps"],
